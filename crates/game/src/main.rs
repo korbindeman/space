@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::window::PresentMode;
 
 pub mod sim;
 pub mod camera;
@@ -13,6 +14,7 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Sol".into(),
+                present_mode: PresentMode::AutoNoVsync,
                 ..default()
             }),
             ..default()
