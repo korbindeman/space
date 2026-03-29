@@ -91,12 +91,25 @@ pub fn predict(
                     remaining_dt -= dt_before;
                 }
 
-                // Apply impulse as direct velocity change
+                // Record pre-burn point in the current segment at the impulse time
                 let dom = dominant_body(&ghost, ship_idx);
+                {
+                    let segment = segments.last_mut().unwrap();
+                    segment.push_point(
+                        ghost.positions[ship_idx],
+                        ghost.positions.clone(),
+                        step_start,
+                        dom,
+                        phase.clone(),
+                    );
+                }
+
+                // Apply impulse as direct velocity change
                 let _frame = space_sim::orbital_frame(
                     ghost.positions[ship_idx],
                     ghost.velocities[ship_idx],
                     ghost.positions[dom],
+                    ghost.velocities[dom],
                 );
                 let node = &sorted_nodes[ni];
                 if let Some(accel) = node.burn.acceleration(&ghost, ship_idx, dom, step_start, 1.0) {
@@ -114,6 +127,16 @@ pub fn predict(
                         let node_id = sorted_nodes[next_node_idx].id;
                         next_node_idx += 1;
                         segments.push(TrailSegment::new(Some(node_id)));
+
+                        // Record post-burn point as first point in new segment
+                        let segment = segments.last_mut().unwrap();
+                        segment.push_point(
+                            ghost.positions[ship_idx],
+                            ghost.positions.clone(),
+                            step_start,
+                            dom,
+                            phase.clone(),
+                        );
                     }
                 }
             } else {

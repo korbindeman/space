@@ -17,9 +17,6 @@ const SUN_RADIUS: f64 = 6.957e8;
 /// Maximum substep size in seconds.
 const MAX_SUBSTEP: f64 = 100.0;
 
-/// Render scale: sim meters to render units.
-pub const RENDER_SCALE: f64 = 1e-6;
-
 // --- Components ---
 
 /// Maps a Bevy entity to its index in SimState.
@@ -52,18 +49,35 @@ pub struct SimClock {
     pub warp: f64,
     pub warp_levels: Vec<f64>,
     pub warp_index: usize,
-    pub paused: bool,
+    /// Remembers the last non-zero warp index so pause/resume can toggle back.
+    pub resume_index: usize,
 }
 
 impl Default for SimClock {
     fn default() -> Self {
         Self {
             time: 0.0,
-            warp: 1.0,
-            warp_levels: vec![1.0, 10.0, 100.0, 1_000.0, 10_000.0, 100_000.0],
+            warp: 0.0,
+            warp_levels: vec![0.0, 1.0, 5.0, 10.0, 50.0, 100.0, 1_000.0, 10_000.0, 100_000.0, 1_000_000.0],
             warp_index: 0,
-            paused: true,
+            resume_index: 1,
         }
+    }
+}
+
+impl SimClock {
+    pub fn paused(&self) -> bool {
+        self.warp_index == 0
+    }
+
+    pub fn toggle_pause(&mut self) {
+        if self.paused() {
+            self.warp_index = self.resume_index;
+        } else {
+            self.resume_index = self.warp_index;
+            self.warp_index = 0;
+        }
+        self.warp = self.warp_levels[self.warp_index];
     }
 }
 
@@ -101,19 +115,16 @@ impl Plugin for SimPlugin {
             .add_systems(Startup, setup)
             .add_systems(Update, (
                 step_simulation,
-                auto_warp_drop,
                 update_live_dominant_body,
-                sync_transforms,
             ));
     }
 }
 
 // --- Systems ---
 
-fn setup(
+/// Set up the initial simulation state and spawn body/ship entities (without visuals).
+pub fn setup(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // --- Build initial SimState ---
     let earth_v = (G * SUN_MASS / AU).sqrt();
@@ -137,7 +148,7 @@ fn setup(
 
     let ship_idx = 3;
 
-    // --- Spawn celestial bodies as sphere meshes ---
+    // --- Spawn celestial body entities (data only, no meshes) ---
     let earth_hill = hill_radius(AU, EARTH_MASS, SUN_MASS);
     let moon_hill = hill_radius(EARTH_MOON_DIST, MOON_MASS, EARTH_MASS);
 
@@ -147,7 +158,6 @@ fn setup(
         radius: f64,
         hill: f64,
         color: Color,
-        emissive: bool,
     }
 
     let body_defs = [
@@ -157,7 +167,6 @@ fn setup(
             radius: SUN_RADIUS,
             hill: 0.0,
             color: Color::srgb(1.0, 0.95, 0.3),
-            emissive: true,
         },
         BodyDef {
             name: "Earth",
@@ -165,7 +174,6 @@ fn setup(
             radius: EARTH_RADIUS,
             hill: earth_hill,
             color: Color::srgb(0.2, 0.4, 0.9),
-            emissive: false,
         },
         BodyDef {
             name: "Moon",
@@ -173,33 +181,13 @@ fn setup(
             radius: MOON_RADIUS,
             hill: moon_hill,
             color: Color::srgb(0.6, 0.6, 0.6),
-            emissive: false,
         },
     ];
 
-    let ship_entity;
-
     for def in &body_defs {
-        let render_radius = (def.radius * RENDER_SCALE) as f32;
-        let visual_radius = render_radius.max(0.01);
-
-        let mesh = meshes.add(Sphere::new(visual_radius));
-        let material = if def.emissive {
-            materials.add(StandardMaterial {
-                base_color: def.color,
-                emissive: def.color.into(),
-                ..default()
-            })
-        } else {
-            materials.add(StandardMaterial {
-                base_color: def.color,
-                ..default()
-            })
-        };
-
         commands.spawn((
-            Mesh3d(mesh),
-            MeshMaterial3d(material),
+            Transform::default(),
+            Visibility::Inherited,
             SimBody(def.idx),
             CelestialBody {
                 name: def.name.to_string(),
@@ -210,17 +198,10 @@ fn setup(
         ));
     }
 
-    // --- Spawn ship ---
-    let ship_mesh = meshes.add(Sphere::new(0.02));
-    let ship_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.0, 1.0, 0.5),
-        emissive: Color::srgb(0.0, 1.0, 0.5).into(),
-        ..default()
-    });
-
-    ship_entity = commands.spawn((
-        Mesh3d(ship_mesh),
-        MeshMaterial3d(ship_material),
+    // --- Spawn ship entity (data only) ---
+    let ship_entity = commands.spawn((
+        Transform::default(),
+        Visibility::Inherited,
         SimBody(ship_idx),
         Ship,
     )).id();
@@ -228,18 +209,9 @@ fn setup(
     // --- Lighting ---
     commands.spawn(AmbientLight {
         color: Color::WHITE,
-        brightness: 200.0,
+        brightness: 50.0,
         ..default()
     });
-
-    commands.spawn((
-        PointLight {
-            intensity: 10_000_000.0,
-            range: 100_000.0,
-            ..default()
-        },
-        Transform::default(),
-    ));
 
     // --- Insert resources ---
     commands.insert_resource(PhysicsState {
@@ -248,7 +220,7 @@ fn setup(
         force_model: Box::new(NBodyGravity::with_exclusions(vec![ship_idx])),
     });
 
-    commands.insert_resource(crate::camera::CameraFocus {
+    commands.insert_resource(crate::nav_map::camera::CameraFocus {
         entity: ship_entity,
         body_index: Some(ship_idx),
         active_frame: ship_idx,
@@ -274,10 +246,10 @@ fn step_simulation(
     time: Res<Time>,
     mut clock: ResMut<SimClock>,
     mut physics: ResMut<PhysicsState>,
-    mut plan: ResMut<crate::maneuver::ManeuverPlan>,
+    mut plan: ResMut<crate::nav_map::maneuver::ManeuverPlan>,
     ship_config: Res<ShipConfig>,
 ) {
-    if clock.paused {
+    if clock.paused() {
         return;
     }
 
@@ -346,44 +318,4 @@ fn update_live_dominant_body(
     let dom_idx = dominant_body(&physics.state, ship_config.sim_index);
     live_dom.index = dom_idx;
     live_dom.entity = bodies.iter().find(|(_, sb)| sb.0 == dom_idx).map(|(e, _)| e);
-}
-
-/// Sync entity Transforms to camera-relative positions.
-fn sync_transforms(
-    physics: Res<PhysicsState>,
-    camera_focus: Res<crate::camera::CameraFocus>,
-    mut query: Query<(&SimBody, &mut Transform)>,
-) {
-    let focus_idx = camera_focus.active_frame;
-    let camera_sim_pos = if focus_idx < physics.state.positions.len() {
-        physics.state.positions[focus_idx]
-    } else {
-        DVec3::ZERO
-    };
-
-    for (sim_body, mut transform) in &mut query {
-        let sim_pos = physics.state.positions[sim_body.0];
-        let relative = (sim_pos - camera_sim_pos) * RENDER_SCALE;
-        transform.translation = relative.as_vec3();
-    }
-}
-
-/// Auto-drop warp to 1x when approaching a maneuver node.
-fn auto_warp_drop(
-    mut clock: ResMut<SimClock>,
-    plan: Res<crate::maneuver::ManeuverPlan>,
-) {
-    if clock.paused || clock.warp_index == 0 {
-        return;
-    }
-
-    for node in &plan.nodes {
-        let (burn_start, _) = node.burn.time_window();
-        let time_to_node = burn_start - clock.time;
-        if time_to_node > 0.0 && time_to_node < 30.0 * clock.warp {
-            clock.warp_index = 0;
-            clock.warp = clock.warp_levels[0];
-            break;
-        }
-    }
 }

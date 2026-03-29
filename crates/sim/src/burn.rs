@@ -55,6 +55,7 @@ impl BurnModel for ImpulseBurn {
             state.positions[ship_idx],
             state.velocities[ship_idx],
             state.positions[dominant_body_idx],
+            state.velocities[dominant_body_idx],
         );
         let world_dv = frame * self.delta_v;
         Some(world_dv / dt)

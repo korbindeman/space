@@ -8,7 +8,7 @@ use glam::{DMat3, DVec3};
 ///   col 2 = radial    (outward from center)
 ///
 /// If velocity is zero or parallel to radial, returns an arbitrary valid frame.
-pub fn orbital_frame(pos: DVec3, vel: DVec3, center_pos: DVec3) -> DMat3 {
+pub fn orbital_frame(pos: DVec3, vel: DVec3, center_pos: DVec3, center_vel: DVec3) -> DMat3 {
     let r = pos - center_pos;
     let radial = if r.length_squared() > 0.0 {
         r.normalize()
@@ -16,7 +16,7 @@ pub fn orbital_frame(pos: DVec3, vel: DVec3, center_pos: DVec3) -> DMat3 {
         DVec3::X
     };
 
-    let rel_vel = vel; // velocity is already in inertial frame
+    let rel_vel = vel - center_vel;
     let angular_momentum = r.cross(rel_vel);
 
     let normal = if angular_momentum.length_squared() > 1e-30 {

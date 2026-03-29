@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn test_orbital_frame_orthonormality() {
         let (state, _) = circular_orbit_state(400.0);
-        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0]);
+        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0], state.velocities[0]);
 
         let prograde = frame.col(0);
         let normal = frame.col(1);
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn test_orbital_frame_prograde_parallel() {
         let (state, _) = circular_orbit_state(400.0);
-        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0]);
+        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0], state.velocities[0]);
 
         let prograde = frame.col(0);
         let vel_dir = state.velocities[1].normalize();
@@ -518,7 +518,7 @@ mod tests {
             let pos = DVec3::new(r * angle.cos(), 0.0, r * angle.sin());
             let vel = DVec3::new(-v * angle.sin(), 0.0, v * angle.cos());
 
-            let frame = orbital_frame(pos, vel, DVec3::ZERO);
+            let frame = orbital_frame(pos, vel, DVec3::ZERO, DVec3::ZERO);
             let prograde = frame.col(0);
             let vel_dir = vel.normalize();
             let dot = prograde.dot(vel_dir);
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn test_orbital_frame_eccentric_orbit() {
         let (state, _) = elliptical_orbit_state(200.0, 35_786.0);
-        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0]);
+        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0], state.velocities[0]);
 
         let prograde = frame.col(0);
         assert!(
@@ -551,7 +551,7 @@ mod tests {
         let mu = G * EARTH_MASS;
         let r0 = (state.positions[1] - state.positions[0]).length();
 
-        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0]);
+        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0], state.velocities[0]);
         let dv_world = frame * DVec3::new(100.0, 0.0, 0.0);
         state.velocities[1] += dv_world;
 
@@ -577,7 +577,7 @@ mod tests {
         let mu = G * EARTH_MASS;
         let r0 = (state.positions[1] - state.positions[0]).length();
 
-        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0]);
+        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0], state.velocities[0]);
         let dv_world = frame * DVec3::new(-100.0, 0.0, 0.0);
         state.velocities[1] += dv_world;
 
@@ -597,7 +597,7 @@ mod tests {
         let (mut state, _) = circular_orbit_state(400.0);
         let mu = G * EARTH_MASS;
 
-        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0]);
+        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0], state.velocities[0]);
         let dv_world = frame * DVec3::new(0.0, 200.0, 0.0);
         state.velocities[1] += dv_world;
 
@@ -617,7 +617,7 @@ mod tests {
         let (mut state, _) = circular_orbit_state(400.0);
         let mu = G * EARTH_MASS;
 
-        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0]);
+        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0], state.velocities[0]);
         let dv_world = frame * DVec3::new(0.0, 0.0, 100.0);
         state.velocities[1] += dv_world;
 

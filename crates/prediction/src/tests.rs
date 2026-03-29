@@ -189,7 +189,8 @@ mod tests {
 
         let earth_pos = state.positions[1];
         let ship_pos = state.positions[ship_idx];
-        let frame = orbital_frame(ship_pos, state.velocities[ship_idx], earth_pos);
+        let earth_vel = state.velocities[1];
+        let frame = orbital_frame(ship_pos, state.velocities[ship_idx], earth_pos, earth_vel);
         state.velocities[ship_idx] += frame * DVec3::new(3200.0, 0.0, 0.0);
 
         let config = leo_config();
@@ -248,7 +249,7 @@ mod tests {
         config.body_hill_radii = vec![1e9];
 
         let v_escape = (2.0 * G * EARTH_MASS / (EARTH_RADIUS + 400_000.0)).sqrt();
-        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0]);
+        let frame = orbital_frame(state.positions[1], state.velocities[1], state.positions[0], state.velocities[0]);
         state.velocities[1] += frame * DVec3::new(v_escape * 0.5, 0.0, 0.0);
 
         let result = predict(&state, 1, &[], &force, &integrator, &config, 0.0);
