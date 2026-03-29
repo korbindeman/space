@@ -120,6 +120,9 @@ pub fn predict(
                 step_start += 1e-10;
                 remaining_dt -= 1e-10;
 
+                // Reset phase for the new post-burn orbit
+                phase = determine_initial_phase(&ghost, ship_idx, config);
+
                 // Segment split after this node
                 if next_node_idx < sorted_nodes.len() {
                     let (_, end) = sorted_nodes[next_node_idx].burn.time_window();
