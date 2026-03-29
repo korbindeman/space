@@ -1,0 +1,10 @@
+[package]
+name = "space_game"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bevy = { version = "0.18", features = ["dynamic_linking"] }
+bevy_egui = "0.39"
+space_sim = { path = "../sim" }
+space_prediction = { path = "../prediction" }

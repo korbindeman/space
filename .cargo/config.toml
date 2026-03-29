@@ -1,0 +1,12 @@
+# Use Cranelift for faster debug compiles.
+# Requires nightly: rustup component add rustc-codegen-cranelift-preview --toolchain nightly
+
+[unstable]
+codegen-backend = true
+
+[profile.dev]
+codegen-backend = "cranelift"
+
+# Keep dependencies on LLVM — Cranelift optimizes poorly at higher opt-levels.
+[profile.dev.package."*"]
+codegen-backend = "llvm"
