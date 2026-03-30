@@ -5,10 +5,15 @@ use space_sim::gravity::G;
 use space_sim::orbital_elements;
 
 use crate::sim::{BodyData, LiveDominantBody, PhysicsState, ShipConfig, TrailFrame};
-use super::camera::CameraFocus;
+use super::camera::{CameraFocus, OrbitCamera};
 use super::prediction::PredictionCache;
 use super::target::TargetBody;
 use super::{RENDER_SCALE, BODY_COLORS};
+
+use std::f64::consts::TAU;
+
+/// Star body index (first body in the solar system definition, has no parent).
+const STAR_IDX: usize = 0;
 
 /// Number of sample points per body orbit line.
 const ORBIT_SAMPLES: usize = 256;
@@ -36,7 +41,8 @@ impl Plugin for TrajectoryPlugin {
 
 // --- Systems ---
 
-/// Propagate N-body sim to cache one full orbit for each celestial body.
+/// Compute Keplerian orbit ellipses for each celestial body.
+/// Samples uniformly in true anomaly for smooth rendering at all eccentricities.
 fn compute_body_orbits(
     physics: Res<PhysicsState>,
     ship_config: Res<ShipConfig>,
@@ -64,18 +70,20 @@ fn compute_body_orbits(
             continue;
         }
 
-        let period = elements.period;
-        let dt = period / ORBIT_SAMPLES as f64;
-        let mut ghost = physics.state.clone();
-        let accel_fn = |s: &space_sim::SimState| physics.force_model.compute_accelerations(s);
-
-        let mut trail = Vec::with_capacity(ORBIT_SAMPLES + 1);
-        trail.push(ghost.positions[body_idx] - ghost.positions[parent_idx]);
-
-        for _ in 0..ORBIT_SAMPLES {
-            physics.integrator.step(&mut ghost, &accel_fn, dt);
-            trail.push(ghost.positions[body_idx] - ghost.positions[parent_idx]);
-        }
+        // Sample the Keplerian ellipse analytically — uniform in true anomaly
+        let trail: Vec<DVec3> = (0..=ORBIT_SAMPLES)
+            .map(|i| {
+                let nu = i as f64 / ORBIT_SAMPLES as f64 * TAU;
+                keplerian_position(
+                    elements.semi_major_axis,
+                    elements.eccentricity,
+                    nu,
+                    elements.inclination,
+                    elements.argument_of_periapsis,
+                    elements.longitude_of_ascending_node,
+                )
+            })
+            .collect();
 
         orbit_cache.orbits[body_idx] = Some((parent_idx, trail));
     }
@@ -91,6 +99,8 @@ fn render_trajectories(
     ship_config: Res<ShipConfig>,
     live_dom: Res<LiveDominantBody>,
     orbit_cache: Res<BodyOrbitCache>,
+    orbit_camera: Res<OrbitCamera>,
+    body_data: Res<BodyData>,
     mut gizmos: Gizmos,
 ) {
     // Body orbit lines (independent of prediction cache — renders on first frame)
@@ -100,7 +110,36 @@ fn render_trajectories(
     } else {
         focus_idx
     };
-    render_cached_orbits(parent_idx, &physics, &orbit_cache, &trail_frame, &mut gizmos);
+    render_cached_orbits(parent_idx, 1.0, &physics, &orbit_cache, &body_data, &trail_frame, &mut gizmos);
+
+    // When zoomed out past the local system, fade in star-level orbits (KSP-style).
+    // Compare camera distance against the furthest child orbit of the focused body.
+    if parent_idx != STAR_IDX {
+        // Local system extent in sim meters (furthest child orbit)
+        let local_extent = orbit_cache.orbits.iter()
+            .filter_map(|entry| {
+                let (cached_parent, trail) = entry.as_ref()?;
+                if *cached_parent != parent_idx { return None; }
+                trail.iter().map(|p| p.length()).reduce(f64::max)
+            })
+            .fold(0.0_f64, f64::max);
+
+        // If no children (leaf body), use its own Hill sphere as the local extent
+        let local_extent = if local_extent > 0.0 {
+            local_extent
+        } else {
+            body_data.hill_radii.get(parent_idx).copied().unwrap_or(0.0)
+        };
+
+        if local_extent > 0.0 {
+            // Fade in from 2x to 5x the local system extent
+            let ratio = orbit_camera.distance / local_extent;
+            if ratio > 2.0 {
+                let alpha = ((ratio - 2.0) / 3.0).clamp(0.0, 1.0) as f32;
+                render_cached_orbits(STAR_IDX, alpha, &physics, &orbit_cache, &body_data, &trail_frame, &mut gizmos);
+            }
+        }
+    }
 
     // Everything below requires prediction data
     let Some(ref result) = cache.result else {
@@ -220,12 +259,25 @@ fn find_grav_parent(
     None
 }
 
+/// Orbit line opacity: planets and moons are visible, small bodies are very faint.
+fn orbit_alpha(body_idx: usize, body_data: &BodyData) -> f32 {
+    let radius = body_data.radii.get(body_idx).copied().unwrap_or(0.0);
+    if radius >= 700_000.0 {
+        1.0
+    } else {
+        0.05
+    }
+}
+
 /// Render cached N-body orbit trails for children of `parent_idx`.
 /// If `parent_idx` is a leaf node, show its own orbit around its parent instead.
+/// `alpha_mult` scales the orbit line opacity (0.0–1.0) for fade-in effects.
 fn render_cached_orbits(
     parent_idx: usize,
+    alpha_mult: f32,
     physics: &PhysicsState,
     orbit_cache: &BodyOrbitCache,
+    body_data: &BodyData,
     trail_frame: &TrailFrame,
     gizmos: &mut Gizmos,
 ) {
@@ -257,7 +309,8 @@ fn render_cached_orbits(
         } else {
             Color::WHITE
         };
-        let color = base_color.with_alpha(0.15);
+        let alpha = orbit_alpha(body_idx, body_data) * alpha_mult;
+        let color = base_color.with_alpha(alpha);
 
         let parent_pos = physics.state.positions.get(*cached_parent).copied().unwrap_or(DVec3::ZERO);
         let frame_pos = physics.state.positions.get(trail_frame.index).copied().unwrap_or(DVec3::ZERO);
@@ -269,6 +322,33 @@ fn render_cached_orbits(
             gizmos.line(p0, p1, color);
         }
     }
+}
+
+/// Position on a Keplerian ellipse at true anomaly `nu`, relative to the parent.
+fn keplerian_position(
+    a: f64,
+    e: f64,
+    nu: f64,
+    incl: f64,
+    arg_periapsis: f64,
+    lon_ascending_node: f64,
+) -> DVec3 {
+    let r = a * (1.0 - e * e) / (1.0 + e * nu.cos());
+    let angle_in_plane = arg_periapsis + nu;
+    let pos_plane = DVec3::new(
+        r * angle_in_plane.cos(),
+        0.0,
+        r * angle_in_plane.sin(),
+    );
+    let node_axis = DVec3::new(lon_ascending_node.cos(), 0.0, lon_ascending_node.sin());
+    rodrigues(pos_plane, node_axis, incl)
+}
+
+/// Rodrigues' rotation: rotate `vec` around unit `axis` by `angle` radians.
+fn rodrigues(vec: DVec3, axis: DVec3, angle: f64) -> DVec3 {
+    let cos_a = angle.cos();
+    let sin_a = angle.sin();
+    vec * cos_a + axis.cross(vec) * sin_a + axis * axis.dot(vec) * (1.0 - cos_a)
 }
 
 fn trail_color(dominant_body: usize, point_idx: usize, total_points: usize) -> Color {

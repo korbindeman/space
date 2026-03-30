@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::sim::*;
+use super::camera::CameraFocus;
 use super::maneuver::ManeuverPlan;
 use super::prediction::*;
 
@@ -24,10 +25,24 @@ fn time_control_panel(
     cache: Res<PredictionCache>,
     mut predict_further: ResMut<PredictFurther>,
     mut plan: ResMut<ManeuverPlan>,
+    camera_focus: Res<CameraFocus>,
+    bodies: Query<(&SimBody, &CelestialBody)>,
+    ships: Query<&Ship>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
     egui::TopBottomPanel::top("time_control").show(ctx, |ui| {
         ui.horizontal(|ui| {
+            let focus_name = if ships.get(camera_focus.entity).is_ok() {
+                "Ship".to_string()
+            } else {
+                bodies
+                    .iter()
+                    .find(|(sb, _)| camera_focus.body_index == Some(sb.0))
+                    .map(|(_, cb)| cb.name.clone())
+                    .unwrap_or_else(|| "Unknown".to_string())
+            };
+            ui.label(format!("\u{1f4cd} {}", focus_name));
+            ui.separator();
             if ui.button(if clock.paused() { "\u{25b6} Resume" } else { "\u{23f8} Pause" }).clicked() {
                 clock.toggle_pause();
             }

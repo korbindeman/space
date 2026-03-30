@@ -1,0 +1,260 @@
+(
+    bodies: [
+        // Star
+        (
+            name: "Pyros",
+            parent: None,
+            mass: Solar(1.0),
+            radius_km: 696000.0,
+            orbit: None,
+            color: (1.0, 0.95, 0.3),
+            is_star: true,
+        ),
+
+        // I. Hot Rocky World — tidally locked iron marble
+        // High inclination from early inner-system scattering (cf. Mercury at 7°)
+        (
+            name: "Ignis",
+            parent: Some("Pyros"),
+            mass: Earth(0.0026),
+            radius_km: 813.0,
+            orbit: Some((radius: Au(0.30), eccentricity: 0.02, start_angle: 47.0, inclination: 5.8)),
+            color: (0.85, 0.35, 0.1),
+        ),
+
+        // II. Venus Analogue — crushing atmosphere, highest surface gravity
+        // Modest inclination (cf. Venus at 3.4°)
+        (
+            name: "Ashara",
+            parent: Some("Pyros"),
+            mass: Earth(0.44),
+            radius_km: 4035.0,
+            orbit: Some((radius: Au(0.65), eccentricity: 0.01, start_angle: 192.0, inclination: 2.8)),
+            color: (0.82, 0.78, 0.45),
+        ),
+
+        // III. Homeworld — reference plane (0° by definition, like Earth's ecliptic)
+        (
+            name: "Thalos",
+            parent: Some("Pyros"),
+            mass: Earth(0.23),
+            radius_km: 3186.0,
+            orbit: Some((radius: Au(1.00), eccentricity: 0.017, start_angle: 0.0, inclination: 0.0)),
+            color: (0.2, 0.45, 0.9),
+        ),
+
+        // III Moon — giant-impact moon, slight tilt from impact geometry
+        (
+            name: "Mira",
+            parent: Some("Thalos"),
+            mass: Earth(0.0023),
+            radius_km: 869.0,
+            orbit: Some((radius: Km(192000.0), eccentricity: 0.0, start_angle: 135.0, inclination: 5.1)),
+            color: (0.65, 0.63, 0.6),
+        ),
+
+        // IV. Sub-Saturn — 3:2 resonance with homeworld keeps inclination very low
+        (
+            name: "Auron",
+            parent: Some("Pyros"),
+            mass: Earth(40.0),
+            radius_km: 44600.0,
+            orbit: Some((radius: Au(1.31), eccentricity: 0.03, start_angle: 248.0, inclination: 0.9)),
+            color: (0.85, 0.75, 0.45),
+        ),
+
+        // IV-a. Ocean Moon — orbits in Auron's equatorial plane, tilted relative to ecliptic
+        (
+            name: "Pelagos",
+            parent: Some("Auron"),
+            mass: Earth(0.073),
+            radius_km: 2350.0,
+            orbit: Some((radius: Km(500000.0), eccentricity: 0.0, start_angle: 72.0, inclination: 1.2)),
+            color: (0.15, 0.5, 0.55),
+        ),
+
+        // V. Mars Analogue — secularly unstable, inclination pumped by perturbations
+        (
+            name: "Vaelen",
+            parent: Some("Pyros"),
+            mass: Earth(0.0066),
+            radius_km: 1130.0,
+            orbit: Some((radius: Au(1.70), eccentricity: 0.20, start_angle: 118.0, inclination: 4.3)),
+            color: (0.75, 0.4, 0.25),
+        ),
+
+        // VII. Jupiter Analogue — massive, disk-formed, low inclination (cf. Jupiter at 1.3°)
+        (
+            name: "Teros",
+            parent: Some("Pyros"),
+            mass: Jupiter(1.2),
+            radius_km: 74000.0,
+            orbit: Some((radius: Au(5.0), eccentricity: 0.04, start_angle: 315.0, inclination: 1.1)),
+            color: (0.75, 0.55, 0.3),
+        ),
+
+        // VII-a. Europa Analogue — subsurface ocean, chemosynthetic microbial life
+        // 1:2 scale, regular moon, low inclination to Teros equator
+        (
+            name: "Glacis",
+            parent: Some("Teros"),
+            mass: Earth(0.0015),
+            radius_km: 780.0,
+            orbit: Some((radius: Km(670000.0), eccentricity: 0.0, start_angle: 210.0, inclination: 0.5)),
+            color: (0.82, 0.82, 0.88),
+        ),
+
+        // VII-b. Io Analogue — volcanic, tidally tortured, sulfur-rich, deep in radiation belts
+        // 1:2 scale
+        (
+            name: "Pyrith",
+            parent: Some("Teros"),
+            mass: Earth(0.0019),
+            radius_km: 910.0,
+            orbit: Some((radius: Km(422000.0), eccentricity: 0.004, start_angle: 30.0, inclination: 0.04)),
+            color: (0.9, 0.7, 0.2),
+        ),
+
+        // VII-c. Ganymede Analogue — largest moon, mixed ice-rock, thin atmosphere
+        // Most habitable outer moon (lowest radiation at orbital distance)
+        // 1:2 scale
+        (
+            name: "Lithos",
+            parent: Some("Teros"),
+            mass: Earth(0.003),
+            radius_km: 1315.0,
+            orbit: Some((radius: Km(1070000.0), eccentricity: 0.001, start_angle: 145.0, inclination: 0.2)),
+            color: (0.45, 0.55, 0.65),
+        ),
+
+        // VII-d. Callisto Analogue — ancient cratered surface, possible frozen fossil ocean
+        // Geological record of early system bombardment
+        // 1:2 scale
+        (
+            name: "Calyx",
+            parent: Some("Teros"),
+            mass: Earth(0.0023),
+            radius_km: 1205.0,
+            orbit: Some((radius: Km(1880000.0), eccentricity: 0.007, start_angle: 280.0, inclination: 0.3)),
+            color: (0.4, 0.35, 0.3),
+        ),
+
+        // VIII. Second Gas Giant — prominent icy rings, visual showpiece
+        // Moderate inclination (cf. Saturn at 2.5°)
+        (
+            name: "Seraph",
+            parent: Some("Pyros"),
+            mass: Jupiter(0.5),
+            radius_km: 60000.0,
+            orbit: Some((radius: Au(8.5), eccentricity: 0.05, start_angle: 163.0, inclination: 2.2)),
+            color: (0.55, 0.6, 0.75),
+        ),
+
+        // VIII-a. Titan Analogue — thick N₂/CH₄ atmosphere, hydrocarbon lakes
+        // Late-game organic chemistry feedstock source
+        // 1:2 scale
+        (
+            name: "Tethyn",
+            parent: Some("Seraph"),
+            mass: Earth(0.003),
+            radius_km: 1288.0,
+            orbit: Some((radius: Km(1222000.0), eccentricity: 0.029, start_angle: 90.0, inclination: 0.3)),
+            color: (0.7, 0.55, 0.2),
+        ),
+
+        // IX. Inner Ice Giant — outer formation region, modest tilt (cf. Neptune at 1.8°)
+        (
+            name: "Nereus",
+            parent: Some("Pyros"),
+            mass: Earth(17.0),
+            radius_km: 25000.0,
+            orbit: Some((radius: Au(18.0), eccentricity: 0.03, start_angle: 67.0, inclination: 1.6)),
+            color: (0.2, 0.55, 0.65),
+        ),
+
+        // X. Outer Ice Giant — 82° axial tilt but orbital inclination is separate; modest
+        (
+            name: "Pallos",
+            parent: Some("Pyros"),
+            mass: Earth(12.0),
+            radius_km: 22000.0,
+            orbit: Some((radius: Au(28.0), eccentricity: 0.04, start_angle: 289.0, inclination: 1.4)),
+            color: (0.6, 0.8, 0.85),
+        ),
+
+        // Pluto Analogue — Kuiper belt dwarf planet, 3:2 resonance with Pallos
+        // Binary system, reddish tholins, thin seasonal N₂ atmosphere
+        (
+            name: "Erebos",
+            parent: Some("Pyros"),
+            mass: Earth(0.0022),
+            radius_km: 600.0,
+            orbit: Some((radius: Au(42.0), eccentricity: 0.25, start_angle: 55.0, inclination: 17.0, arg_periapsis: 110.0, lon_ascending_node: 45.0)),
+            color: (0.7, 0.45, 0.35),
+        ),
+
+        // Erebos companion — mutually tidally locked binary, ~40% diameter of Erebos
+        // Formed from giant impact in early Kuiper belt
+        (
+            name: "Nyx",
+            parent: Some("Erebos"),
+            mass: Earth(0.00026),
+            radius_km: 240.0,
+            orbit: Some((radius: Km(19500.0), eccentricity: 0.0, start_angle: 0.0, inclination: 0.0)),
+            color: (0.6, 0.4, 0.35),
+        ),
+
+        // Haumea Analogue — fast-spinning triaxial ellipsoid, collisional family, narrow ring
+        // Using mean radius (~600 km) for the elongated body (900x550x450 km)
+        (
+            name: "Vorra",
+            parent: Some("Pyros"),
+            mass: Earth(0.0007),
+            radius_km: 600.0,
+            orbit: Some((radius: Au(43.0), eccentricity: 0.19, start_angle: 180.0, inclination: 28.0, arg_periapsis: 240.0, lon_ascending_node: 120.0)),
+            color: (0.9, 0.92, 0.95),
+        ),
+
+        // Sedna Analogue — detached object, most distant known body
+        // Perihelion 78 AU, aphelion ~500 AU, deep red surface
+        (
+            name: "Acheron",
+            parent: Some("Pyros"),
+            mass: Earth(0.0002),
+            radius_km: 450.0,
+            orbit: Some((radius: Au(290.0), eccentricity: 0.73, start_angle: 0.0, inclination: 25.0, arg_periapsis: 310.0, lon_ascending_node: 200.0)),
+            color: (0.6, 0.2, 0.15),
+        ),
+
+        // Centaur — Kuiper belt refugee orbiting between giants VIII and IX
+        // Unstable orbit, intermittent cometary activity at perihelion
+        (
+            name: "Chiron",
+            parent: Some("Pyros"),
+            mass: Kg(4.0e18),
+            radius_km: 120.0,
+            orbit: Some((radius: Au(13.0), eccentricity: 0.35, start_angle: 200.0, inclination: 35.0, arg_periapsis: 50.0, lon_ascending_node: 170.0)),
+            color: (0.5, 0.45, 0.4),
+        ),
+
+        // Short-period Comet — the civilization's Halley's comet, ~52 year period
+        // Perihelion 1.4 AU, bright naked-eye object, deep cultural significance
+        (
+            name: "Wanderer",
+            parent: Some("Pyros"),
+            mass: Kg(2.2e14),
+            radius_km: 6.0,
+            orbit: Some((radius: Au(17.0), eccentricity: 0.92, start_angle: 150.0, inclination: 22.0, arg_periapsis: 170.0, lon_ascending_node: 65.0)),
+            color: (0.75, 0.88, 0.9),
+        ),
+    ],
+
+    ship: (
+        parent: "Thalos",
+        altitude_km: 400.0,
+        mass_kg: 1000.0,
+        thrust_newtons: 10000.0,
+        dry_mass_kg: 800.0,
+        fuel_mass_kg: 200.0,
+    ),
+)

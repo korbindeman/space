@@ -104,7 +104,7 @@ pub(crate) fn setup_visuals(
 
         // Sphere mesh — shared between real body and future ghosts
         let sphere_mesh = meshes.add(Sphere::new(visual_radius));
-        let material = if body.name == "Sun" {
+        let material = if body.is_star {
             materials.add(StandardMaterial {
                 base_color: body.color,
                 emissive: {
@@ -161,7 +161,7 @@ pub(crate) fn setup_visuals(
             BodyLabel,
         ));
 
-        if body.name == "Sun" {
+        if body.is_star {
             entity_commands.with_child(PointLight {
                 intensity: 10_000_000.0,
                 range: 100_000.0,
@@ -275,7 +275,8 @@ fn sync_transforms(
 
         if let Some(body) = celestial {
             let render_radius = (body.radius * RENDER_SCALE) as f32;
-            let use_icon = render_radius < icon_radius;
+            // Star always renders at real scale — never collapse to icon
+            let use_icon = !body.is_star && render_radius < icon_radius;
 
             if let Some(children) = children {
                 for child in children.iter() {

@@ -15,34 +15,56 @@ cargo test                    # Run all tests
 cargo test -p space_sim       # Run tests for a single crate
 cargo test -p space_prediction
 cargo clippy                  # Lint
+cargo run -p stability_check -- assets/solar_system.ron 100 60  # Validate orbital stability (years, dt)
+cargo run -p stability_check -- assets/solar_system.ron 100 60 --fix  # Auto-fix unstable orbits
 ```
 
 First build is slow due to Bevy. Dev builds use `opt-level = 1` with fully optimized deps (`opt-level = 3`) for acceptable runtime performance.
+
+The game runs borderless fullscreen with vsync off. Assets are loaded from `../../assets` relative to the game crate (set via `AssetPlugin` in `main.rs`).
 
 ## Architecture
 
 Three-layer stack where each layer depends only on the one below:
 
 ```
-Game Plugins            → crates/game/src/          (Bevy plugins: sim, camera, prediction, maneuver, trail, target, hud)
+Game (Bevy App)         → crates/game/src/          (SimPlugin + NavMapPlugin)
+  sim.rs                                            (physics stepping, scene setup, dominant body tracking)
+  solar_system.rs                                   (RON scene loader, Keplerian element conversion)
+  nav_map/                                          (camera, prediction, maneuver, trajectory, body, target, hud)
 Prediction Pipeline     → crates/prediction/        (ghost propagation, phase machine, encounters)
 Simulation Core         → crates/sim/               (integrator, gravity, burns, orbital math)
+Stability Tool          → crates/stability/          (CLI: orbital stability validation + auto-fix)
 ```
 
-**Key boundary:** `space_sim` and `space_prediction` have zero Bevy dependency — pure Rust with only `glam` for math. They can be tested headless and are WASM-compatible.
+**Key boundary:** `space_sim`, `space_prediction`, and `stability_check` have zero Bevy dependency — pure Rust with only `glam` for math. They can be tested headless and are WASM-compatible.
 
 ### Workspace Crates
 
 - **`space_sim`** (`crates/sim/`) — N-body simulation core. `SimState` (positions/velocities/masses as parallel vecs), RK4 integrator via `Integrator` trait, `ForceModel` trait (`NBodyGravity`), `BurnModel` trait (`ImpulseBurn`), orbital math helpers. All units are SI (meters, seconds, kilograms).
 - **`space_prediction`** (`crates/prediction/`) — Trajectory prediction pipeline. Takes a `SimState` + maneuver nodes, propagates a ghost copy forward, produces `PredictionResult` with trail segments, encounters, and closest approaches. Uses a phase machine (`PredictionPhase`: Orbiting/Encounter/Transit/Done) to control adaptive timestep and termination.
-- **`space_game`** (`crates/game/`) — Bevy app organized as feature plugins:
-  - **`sim`** — `SimPlugin`: `PhysicsState`, `SimClock`, `ShipConfig`, `LiveDominantBody`, `BodyData` (static body metadata), `TrailFrame` (per-frame trail reference frame + offset), components (`SimBody`, `CelestialBody`, `Ship`), scene setup, physics stepping, transform sync
-  - **`camera`** — `CameraPlugin`: `OrbitCamera`, `CameraFocus`, mouse orbit, keyboard focus cycling and time warp controls
-  - **`prediction`** — `PredictionPlugin`: `PredictionCache`, `PredictFurther`, prediction pipeline runner
-  - **`maneuver`** — `ManeuverPlugin`: `ManeuverPlan`, `ManeuverEvent`, `NodeDeltaV`, `SelectedNode`, arrow handles, node placement/editing, node editor panel
-  - **`trail`** — `TrailPlugin`: predicted trail rendering via gizmos
-  - **`target`** — `TargetPlugin`: `TargetBody`, targeting input, encounter info panel, ghost trail rendering
-  - **`hud`** — `HudPlugin`: time control panel, orbital info panel
+- **`stability_check`** (`crates/stability/`) — CLI tool for validating orbital stability of `solar_system.ron` definitions. Tracks SMA/eccentricity drift, detects collisions and escapes, identifies mean motion resonances. Has `--fix` mode that searches for velocity corrections. No Bevy dependency.
+- **`space_game`** (`crates/game/`) — Bevy app with two top-level plugins:
+  - **`sim`** — `SimPlugin`: `PhysicsState`, `SimClock`, `ShipConfig`, `LiveDominantBody`, `BodyData` (static body metadata), `TrailFrame` (per-frame trail reference frame + offset), components (`SimBody`, `CelestialBody`, `Ship`), scene setup from `solar_system.ron`, physics stepping, transform sync
+  - **`nav_map`** — `NavMapPlugin`: unified navigation map UI, contains all sub-plugins:
+    - **`camera`** — `CameraPlugin`: `OrbitCamera`, `CameraFocus`, mouse orbit, keyboard focus cycling and time warp controls
+    - **`prediction`** — `PredictionPlugin`: `PredictionCache`, `PredictFurther`, prediction pipeline runner
+    - **`maneuver`** — `ManeuverPlugin`: `ManeuverPlan`, `ManeuverEvent`, `NodeDeltaV`, `SelectedNode`, arrow handles, node placement/editing, node editor panel
+    - **`trajectory`** — `TrajectoryPlugin`: predicted trail rendering via gizmos, `BodyOrbitCache` for cached celestial orbit lines
+    - **`body`** — `BodyPlugin`: celestial body spawning/rendering, `EncounterGhost` entities for predicted encounter positions
+    - **`target`** — `TargetPlugin`: `TargetBody`, targeting input, encounter info panel, ghost trail rendering
+    - **`hud`** — `HudPlugin`: time control panel
+
+### Scene Definition
+
+The solar system is defined declaratively in `assets/solar_system.ron` (RON format) and loaded by `solar_system.rs`. Bodies specify mass (in solar/Jupiter/Earth/kg units), radius, color, and full Keplerian orbital elements (SMA, eccentricity, true anomaly, inclination, argument of periapsis, longitude of ascending node). The loader converts Keplerian elements to Cartesian state vectors at startup via `keplerian_state()`.
+
+### Shared Constants (`nav_map/mod.rs`)
+
+- `RENDER_SCALE: f64 = 1e-6` — sim meters to render units
+- `MARKER_RADIUS: f32 = 0.006` — body/node icon size as fraction of camera distance
+- `BODY_COLORS` — color array indexed by sim body index (matches `solar_system.ron` order)
+- `format_distance()` / `format_duration()` — smart unit formatting helpers
 
 ### Simulation Flow
 
@@ -54,7 +76,7 @@ Simulation Core         → crates/sim/               (integrator, gravity, burn
 
 ### Coordinate System
 
-- Sim runs in absolute coordinates (Sun at origin). Render scale: `1e-6` (sim meters to render units).
+- Sim runs in absolute coordinates (Sun at origin). Render scale defined by `RENDER_SCALE` in `nav_map/mod.rs`.
 - Orbital frame is computed per-point relative to the dominant body (determined by Hill sphere membership).
 - Camera orbits the focused entity with yaw/pitch/distance controls.
 
@@ -88,6 +110,8 @@ Full reference: `internal/bevy_guide.md`. Key points for coding in this project:
 
 **Plugin structure.** Plugins register systems/resources/observers. Component/resource type definitions belong in shared modules, not plugins.
 
+**egui integration.** UI panels use `bevy_egui` — systems take `EguiContexts` parameter and draw immediate-mode UI with `egui::Window` / `egui::SidePanel`. Used in hud, camera, maneuver, and target modules.
+
 **Common pitfalls:**
 - `StandardMaterial` renders black if mesh lacks normals. Normal maps need tangents.
 - SSAO and TAA require `Msaa::Off`.
@@ -96,125 +120,10 @@ Full reference: `internal/bevy_guide.md`. Key points for coding in this project:
 - `compute_matrix()` renamed to `to_matrix()` in 0.17.
 - System set renames: `TransformSystem` → `TransformSystems`, `CameraUpdateSystem` → `CameraUpdateSystems`.
 
-## Bevy 0.18 Examples Reference
+## Bevy References
 
-Official examples are an excellent source of implementation patterns. Fetch the source from GitHub when implementing a feature that matches a topic below.
-
-**Base URL:** `https://github.com/bevyengine/bevy/blob/v0.18.1/examples/`
-
-### 3D Rendering & Scene (`3d/`)
-- `3d_scene.rs` — minimal scene setup (camera, light, mesh)
-- `3d_shapes.rs` — all built-in 3D primitives
-- `bloom_3d.rs` — HDR bloom setup
-- `lighting.rs` — point, directional, spot lights with shadows
-- `pbr.rs` — full PBR material showcase (metallic, roughness, emissive)
-- `transparency_3d.rs` — alpha blending modes
-- `lines.rs` — line rendering
-- `generate_custom_mesh.rs` — procedural mesh creation with vertex attributes
-- `post_processing.rs` — fullscreen post-process effects
-- `tonemapping.rs` — tonemapping operator comparison
-- `anti_aliasing.rs` — MSAA, FXAA, SMAA, TAA comparison
-- `skybox.rs` — environment map / skybox
-- `atmosphere.rs` — atmospheric scattering
-- `fog.rs`, `atmospheric_fog.rs`, `volumetric_fog.rs` — fog techniques
-- `render_to_texture.rs` — offscreen rendering
-- `split_screen.rs` — multiple viewports
-- `3d_viewport_to_world.rs` — screen-to-world ray casting
-- `mesh_ray_cast.rs` — ray-mesh intersection
-- `parenting.rs` — transform hierarchy
-- `visibility_range.rs` — LOD via distance
-- `orthographic.rs` — orthographic 3D camera
-
-### Camera (`camera/`)
-- `camera_orbit.rs` — orbit camera (yaw/pitch/distance) **← directly relevant to this project**
-- `free_camera_controller.rs` — WASD fly camera
-- `pan_camera_controller.rs` — pan/zoom camera
-- `projection_zoom.rs` — perspective vs ortho zoom
-- `first_person_view_model.rs` — FPS view model rendering
-- `custom_projection.rs` — custom projection matrix
-
-### Gizmos (`gizmos/`)
-- `3d_gizmos.rs` — lines, circles, arcs, arrows, spheres **← trail/orbit rendering patterns**
-- `axes.rs` — axis indicator gizmo
-- `light_gizmos.rs` — debug light visualization
-
-### Input (`input/`)
-- `mouse_input.rs` — mouse button detection
-- `mouse_input_events.rs` — mouse move/scroll events
-- `keyboard_input.rs` — key press detection
-- `keyboard_input_events.rs` — keyboard events
-- `mouse_grab.rs` — cursor lock/grab
-- `gamepad_input.rs` — controller support
-
-### ECS Patterns (`ecs/`)
-- `observers.rs` — observer pattern basics
-- `observer_propagation.rs` — event bubbling through hierarchy
-- `message.rs`, `send_and_receive_messages.rs` — buffered cross-system messaging
-- `component_hooks.rs` — on-add/remove hooks
-- `change_detection.rs` — `Changed<T>`, `Added<T>` filters
-- `fixed_timestep.rs` — `FixedUpdate` usage
-- `hierarchy.rs` — parent/child relationships
-- `run_conditions.rs` — conditional system execution
-- `relationships.rs` — entity relationships
-- `custom_schedule.rs` — custom schedules
-- `removal_detection.rs` — detecting component removal
-- `system_param.rs` — custom system parameters
-- `one_shot_systems.rs` — on-demand system execution
-- `entity_disabling.rs` — disabling entities
-
-### Movement & Physics (`movement/`)
-- `physics_in_fixed_timestep.rs` — FixedUpdate physics with interpolation **← directly relevant**
-- `smooth_follow.rs` — smooth camera/entity following
-
-### Transforms (`transforms/`)
-- `3d_rotation.rs` — rotation methods (Quat, Euler)
-- `transform.rs` — Transform basics
-- `translation.rs` — movement via translation
-
-### Time (`time/`)
-- `virtual_time.rs` — time scaling (pause, slow-mo, fast-forward) **← relevant to time warp**
-- `time.rs` — time resource basics
-- `timers.rs` — recurring/one-shot timers
-
-### Shaders (`shader/`)
-- `shader_material.rs` — custom material with WGSL
-- `extended_material.rs` — extending StandardMaterial
-- `animate_shader.rs` — time-based shader animation
-- `shader_prepass.rs` — depth/normal prepass access
-- `shader_material_screenspace_texture.rs` — screen-space UVs
-
-### UI (`ui/`)
-- `button.rs` — clickable UI button
-- `text.rs` — text rendering
-- `flex_layout.rs` — flexbox layout
-- `scroll.rs` — scrollable containers
-- `ui_material.rs` — custom UI shaders
-- `relative_cursor_position.rs` — cursor position within UI nodes
-
-### Picking (`picking/`)
-- `mesh_picking.rs` — clicking on 3D meshes
-- `simple_picking.rs` — basic entity picking
-- `dragdrop_picking.rs` — drag and drop
-
-### App Structure (`app/`)
-- `plugin.rs` — plugin definition
-- `plugin_group.rs` — plugin groups
-- `headless.rs` — headless app (no rendering)
-
-### Assets (`asset/`)
-- `asset_loading.rs` — loading assets
-- `alter_mesh.rs` — runtime mesh modification
-- `hot_asset_reloading.rs` — live reload
-
-### Animation (`animation/`)
-- `animated_transform.rs` — keyframe transform animation
-- `eased_motion.rs` — easing/tweening
-- `easing_functions.rs` — easing curve catalog
-
-### State Management (`state/`)
-- `states.rs` — basic state machine
-- `computed_states.rs` — derived states
-- `sub_states.rs` — hierarchical states
+- Full Bevy 0.18 API patterns: `internal/bevy_guide.md`
+- Official examples: `https://github.com/bevyengine/bevy/blob/v0.18.1/examples/` — fetch source when implementing a new feature. Key examples for this project: `camera/camera_orbit.rs`, `gizmos/3d_gizmos.rs`, `movement/physics_in_fixed_timestep.rs`, `time/virtual_time.rs`.
 
 ## Design Reference
 

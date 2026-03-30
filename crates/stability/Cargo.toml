@@ -1,0 +1,10 @@
+[package]
+name = "stability_check"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+space_sim = { path = "../sim" }
+glam = { version = "0.30", features = ["std"] }
+ron = "0.10"
+serde = { version = "1", features = ["derive"] }

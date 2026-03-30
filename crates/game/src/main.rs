@@ -3,6 +3,7 @@ use bevy::asset::AssetPlugin;
 use bevy::window::{PresentMode, WindowMode};
 
 pub mod sim;
+pub mod solar_system;
 pub mod nav_map;
 
 fn main() {

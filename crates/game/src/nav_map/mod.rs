@@ -16,12 +16,23 @@ pub const RENDER_SCALE: f64 = 1e-6;
 /// Radius of screen-stable markers (body icons, ship, maneuver nodes) as a fraction of camera distance.
 pub const MARKER_RADIUS: f32 = 0.006;
 
-/// Body colors for trail segments and icons.
+/// Body colors for trail segments and icons, indexed by sim body index.
+/// Must match the order in solar_system.ron.
 pub const BODY_COLORS: &[Color] = &[
-    Color::srgb(1.0, 0.95, 0.3), // Sun - yellow
-    Color::srgb(0.3, 0.5, 1.0),  // Earth - blue
-    Color::srgb(0.6, 0.6, 0.6),  // Moon - grey
-    Color::srgb(0.0, 1.0, 0.5),  // Ship - green
+    Color::srgb(1.0, 0.95, 0.3),   // 0  Pyros (star)
+    Color::srgb(0.85, 0.35, 0.1),  // 1  Ignis
+    Color::srgb(0.9, 0.75, 0.4),   // 2  Ashara
+    Color::srgb(0.2, 0.45, 0.9),   // 3  Thalos
+    Color::srgb(0.65, 0.63, 0.6),  // 4  Mira
+    Color::srgb(0.85, 0.75, 0.45), // 5  Auron
+    Color::srgb(0.15, 0.5, 0.55),  // 6  Pelagos
+    Color::srgb(0.75, 0.4, 0.25),  // 7  Vaelen
+    Color::srgb(0.8, 0.65, 0.4),   // 8  Teros
+    Color::srgb(0.8, 0.85, 0.95),  // 9  Glacis
+    Color::srgb(0.55, 0.6, 0.75),  // 10 Seraph
+    Color::srgb(0.2, 0.55, 0.65),  // 11 Nereus
+    Color::srgb(0.6, 0.8, 0.85),   // 12 Pallos
+    Color::srgb(0.0, 1.0, 0.5),    // 13 Ship
 ];
 
 // --- Shared helpers ---

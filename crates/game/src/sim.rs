@@ -1,21 +1,13 @@
-use bevy::prelude::*;
 use bevy::math::DVec3;
+use bevy::prelude::*;
 
 use space_prediction::phase::dominant_body;
 use space_sim::*;
 
-// Physical constants
-const SUN_MASS: f64 = 1.989e30;
-const EARTH_MASS: f64 = 5.972e24;
-const MOON_MASS: f64 = 7.342e22;
-const AU: f64 = 1.496e11;
-const EARTH_MOON_DIST: f64 = 3.844e8;
-const EARTH_RADIUS: f64 = 6.371e6;
-const MOON_RADIUS: f64 = 1.737e6;
-const SUN_RADIUS: f64 = 6.957e8;
-
 /// Maximum substep size in seconds.
 const MAX_SUBSTEP: f64 = 100.0;
+/// Maximum substeps per frame. Caps CPU cost; sim falls behind real-time at extreme warp.
+const MAX_SUBSTEPS_PER_FRAME: usize = 500;
 
 // --- Components ---
 
@@ -29,6 +21,7 @@ pub struct CelestialBody {
     pub radius: f64,
     pub hill_radius: f64,
     pub color: Color,
+    pub is_star: bool,
 }
 
 #[derive(Component)]
@@ -58,7 +51,18 @@ impl Default for SimClock {
         Self {
             time: 0.0,
             warp: 0.0,
-            warp_levels: vec![0.0, 1.0, 5.0, 10.0, 50.0, 100.0, 1_000.0, 10_000.0, 100_000.0, 1_000_000.0],
+            warp_levels: vec![
+                0.0,
+                1.0,
+                5.0,
+                10.0,
+                50.0,
+                100.0,
+                1_000.0,
+                10_000.0,
+                100_000.0,
+                1_000_000.0,
+            ],
             warp_index: 0,
             resume_index: 1,
         }
@@ -127,109 +131,63 @@ pub struct SimPlugin;
 
 impl Default for TrailFrame {
     fn default() -> Self {
-        Self { index: 1, offset: Vec3::ZERO }
+        Self {
+            index: 1,
+            offset: Vec3::ZERO,
+        }
     }
 }
 
 impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimClock>()
-            .init_resource::<LiveDominantBody>()
-            .init_resource::<TrailFrame>()
             .add_systems(Startup, setup)
-            .add_systems(Update, (
-                step_simulation,
-                update_live_dominant_body,
-                update_trail_frame.after(update_live_dominant_body),
-            ));
+            .add_systems(
+                Update,
+                (
+                    step_simulation,
+                    update_live_dominant_body,
+                    update_trail_frame.after(update_live_dominant_body),
+                ),
+            );
     }
 }
 
 // --- Systems ---
 
 /// Set up the initial simulation state and spawn body/ship entities (without visuals).
-pub fn setup(
-    mut commands: Commands,
-) {
-    // --- Build initial SimState ---
-    let earth_v = (G * SUN_MASS / AU).sqrt();
-    let moon_v = (G * EARTH_MASS / EARTH_MOON_DIST).sqrt();
-    let ship_alt = 400_000.0;
-    let ship_r = EARTH_RADIUS + ship_alt;
-    let ship_v = (G * EARTH_MASS / ship_r).sqrt();
+pub fn setup(mut commands: Commands) {
+    let ron_str = include_str!("../../../assets/solar_system.ron");
+    let system = crate::solar_system::load(ron_str);
 
-    let earth_pos = DVec3::new(AU, 0.0, 0.0);
-    let earth_vel = DVec3::new(0.0, 0.0, earth_v);
-    let moon_pos = DVec3::new(AU + EARTH_MOON_DIST, 0.0, 0.0);
-    let moon_vel = DVec3::new(0.0, 0.0, earth_v + moon_v);
-    let ship_pos = earth_pos + DVec3::new(ship_r, 0.0, 0.0);
-    let ship_vel = earth_vel + DVec3::new(0.0, 0.0, ship_v);
-
-    let state = SimState {
-        positions: vec![DVec3::ZERO, earth_pos, moon_pos, ship_pos],
-        velocities: vec![DVec3::ZERO, earth_vel, moon_vel, ship_vel],
-        masses: vec![SUN_MASS, EARTH_MASS, MOON_MASS, 1000.0],
-    };
-
-    let ship_idx = 3;
+    let ship_idx = system.ship.sim_index;
+    let homeworld_idx = system.ship.parent_body_index;
 
     // --- Spawn celestial body entities (data only, no meshes) ---
-    let earth_hill = hill_radius(AU, EARTH_MASS, SUN_MASS);
-    let moon_hill = hill_radius(EARTH_MOON_DIST, MOON_MASS, EARTH_MASS);
-
-    struct BodyDef {
-        name: &'static str,
-        idx: usize,
-        radius: f64,
-        hill: f64,
-        color: Color,
-    }
-
-    let body_defs = [
-        BodyDef {
-            name: "Sun",
-            idx: 0,
-            radius: SUN_RADIUS,
-            hill: 0.0,
-            color: Color::srgb(1.0, 0.95, 0.3),
-        },
-        BodyDef {
-            name: "Earth",
-            idx: 1,
-            radius: EARTH_RADIUS,
-            hill: earth_hill,
-            color: Color::srgb(0.2, 0.4, 0.9),
-        },
-        BodyDef {
-            name: "Moon",
-            idx: 2,
-            radius: MOON_RADIUS,
-            hill: moon_hill,
-            color: Color::srgb(0.6, 0.6, 0.6),
-        },
-    ];
-
-    for def in &body_defs {
+    for body in &system.bodies {
         commands.spawn((
             Transform::default(),
             Visibility::Inherited,
-            SimBody(def.idx),
+            SimBody(body.sim_index),
             CelestialBody {
-                name: def.name.to_string(),
-                radius: def.radius,
-                hill_radius: def.hill,
-                color: def.color,
+                name: body.name.clone(),
+                radius: body.radius_m,
+                hill_radius: body.hill_radius_m,
+                color: body.color,
+                is_star: body.is_star,
             },
         ));
     }
 
     // --- Spawn ship entity (data only) ---
-    let ship_entity = commands.spawn((
-        Transform::default(),
-        Visibility::Inherited,
-        SimBody(ship_idx),
-        Ship,
-    )).id();
+    let ship_entity = commands
+        .spawn((
+            Transform::default(),
+            Visibility::Inherited,
+            SimBody(ship_idx),
+            Ship,
+        ))
+        .id();
 
     // --- Lighting ---
     commands.spawn(AmbientLight {
@@ -239,20 +197,19 @@ pub fn setup(
     });
 
     // --- Build static body metadata indexed by sim body index ---
-    // ship_idx + 1 = total body count (bodies 0..ship_idx are celestial, ship_idx is the ship)
     let num_bodies = ship_idx + 1;
     let mut body_data = BodyData {
         radii: vec![0.0; num_bodies],
         hill_radii: vec![0.0; num_bodies],
     };
-    for def in &body_defs {
-        body_data.radii[def.idx] = def.radius;
-        body_data.hill_radii[def.idx] = def.hill;
+    for body in &system.bodies {
+        body_data.radii[body.sim_index] = body.radius_m;
+        body_data.hill_radii[body.sim_index] = body.hill_radius_m;
     }
 
     // --- Insert resources ---
     commands.insert_resource(PhysicsState {
-        state,
+        state: system.state,
         integrator: Box::new(RK4Integrator),
         force_model: Box::new(NBodyGravity::with_exclusions(vec![ship_idx])),
     });
@@ -265,9 +222,19 @@ pub fn setup(
 
     commands.insert_resource(ShipConfig {
         sim_index: ship_idx,
-        thrust_newtons: 10_000.0,
-        dry_mass: 800.0,
-        fuel_mass: 200.0,
+        thrust_newtons: system.ship.thrust_newtons,
+        dry_mass: system.ship.dry_mass_kg,
+        fuel_mass: system.ship.fuel_mass_kg,
+    });
+
+    commands.insert_resource(LiveDominantBody {
+        index: homeworld_idx,
+        entity: None,
+    });
+
+    commands.insert_resource(TrailFrame {
+        index: homeworld_idx,
+        offset: Vec3::ZERO,
     });
 
     commands.insert_resource(body_data);
@@ -275,7 +242,11 @@ pub fn setup(
 
 /// Helper: step the physics state forward by dt.
 fn integrate_step(physics: &mut PhysicsState, dt: f64) {
-    let PhysicsState { state, integrator, force_model } = physics;
+    let PhysicsState {
+        state,
+        integrator,
+        force_model,
+    } = physics;
     let fm = force_model.as_ref();
     integrator.step(state, &|s| fm.compute_accelerations(s), dt);
 }
@@ -293,13 +264,16 @@ fn step_simulation(
         return;
     }
 
-    let frame_dt = time.delta_secs_f64();
+    // Clamp frame delta to prevent runaway catch-up after lag spikes
+    let frame_dt = time.delta_secs_f64().min(0.1);
     let effective_dt = frame_dt * clock.warp;
     if effective_dt <= 0.0 {
         return;
     }
 
-    let num_substeps = (effective_dt / MAX_SUBSTEP).ceil().max(1.0) as usize;
+    let num_substeps = ((effective_dt / MAX_SUBSTEP).ceil() as usize)
+        .max(1)
+        .min(MAX_SUBSTEPS_PER_FRAME);
     let substep_dt = effective_dt / num_substeps as f64;
     let ship_idx = ship_config.sim_index;
 
@@ -326,7 +300,11 @@ fn step_simulation(
             // Apply impulse
             let dom = dominant_body(&physics.state, ship_idx, &body_data.hill_radii);
             if let Some(accel) = plan.nodes[node_idx].burn.acceleration(
-                &physics.state, ship_idx, dom, burn_start, 1.0,
+                &physics.state,
+                ship_idx,
+                dom,
+                burn_start,
+                1.0,
             ) {
                 physics.state.velocities[ship_idx] += accel;
             }
@@ -358,7 +336,10 @@ fn update_live_dominant_body(
 ) {
     let dom_idx = dominant_body(&physics.state, ship_config.sim_index, &body_data.hill_radii);
     live_dom.index = dom_idx;
-    live_dom.entity = bodies.iter().find(|(_, sb)| sb.0 == dom_idx).map(|(e, _)| e);
+    live_dom.entity = bodies
+        .iter()
+        .find(|(_, sb)| sb.0 == dom_idx)
+        .map(|(e, _)| e);
 }
 
 /// Compute the trail reference frame: focused body's frame, or dominant body when focused on ship.
@@ -381,8 +362,18 @@ fn update_trail_frame(
     trail_frame.offset = if frame_idx == cam_frame {
         Vec3::ZERO
     } else {
-        let trail_pos = physics.state.positions.get(frame_idx).copied().unwrap_or(DVec3::ZERO);
-        let cam_pos = physics.state.positions.get(cam_frame).copied().unwrap_or(DVec3::ZERO);
+        let trail_pos = physics
+            .state
+            .positions
+            .get(frame_idx)
+            .copied()
+            .unwrap_or(DVec3::ZERO);
+        let cam_pos = physics
+            .state
+            .positions
+            .get(cam_frame)
+            .copied()
+            .unwrap_or(DVec3::ZERO);
         ((trail_pos - cam_pos) * crate::nav_map::RENDER_SCALE).as_vec3()
     };
 }

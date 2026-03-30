@@ -4,6 +4,7 @@ members = [
     "crates/sim",
     "crates/prediction",
     "crates/game",
+    "crates/stability",
 ]
 
 [workspace.package]
