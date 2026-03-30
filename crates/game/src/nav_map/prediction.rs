@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use space_prediction::PredictionResult;
 
-use crate::sim::*;
+use crate::sim::{PhysicsState, SimClock, ShipConfig, BodyData};
 use super::maneuver::ManeuverPlan;
 use super::target::TargetBody;
 
@@ -12,6 +12,8 @@ use super::target::TargetBody;
 pub struct PredictionCache {
     pub result: Option<PredictionResult>,
     pub computed_at: f64,
+    /// Incremented each time the prediction is recomputed.
+    pub generation: u64,
 }
 
 impl Default for PredictionCache {
@@ -19,6 +21,7 @@ impl Default for PredictionCache {
         Self {
             result: None,
             computed_at: f64::NEG_INFINITY,
+            generation: 0,
         }
     }
 }
@@ -66,7 +69,7 @@ fn run_prediction(
     mut cache: ResMut<PredictionCache>,
     ship_config: Res<ShipConfig>,
     target: Res<TargetBody>,
-    sim_bodies: Query<(&SimBody, &CelestialBody)>,
+    body_data: Res<BodyData>,
     predict_further: Res<PredictFurther>,
 ) {
     let needs_update = plan.dirty || (clock.time - cache.computed_at).abs() > 0.5;
@@ -74,32 +77,14 @@ fn run_prediction(
         return;
     }
 
-    // Build prediction config from current state
-    let mut body_radii = Vec::new();
-    let mut body_hill_radii = Vec::new();
-    let mut body_parent = Vec::new();
-
-    // Collect body data sorted by sim index
-    let mut body_data: Vec<(usize, &CelestialBody)> = sim_bodies
-        .iter()
-        .map(|(sb, cb)| (sb.0, cb))
-        .collect();
-    body_data.sort_by_key(|(idx, _)| *idx);
-
-    for (_, cb) in &body_data {
-        body_radii.push(cb.radius);
-        body_hill_radii.push(cb.hill_radius);
-        body_parent.push(None); // simplified for now
-    }
-
     let config = space_prediction::PredictionConfig {
         max_steps: 10_000,
         base_dt: 60.0,
         adaptive_dt: true,
         target_body: target.target,
-        body_radii,
-        body_hill_radii,
-        body_parent,
+        body_radii: body_data.radii.clone(),
+        body_hill_radii: body_data.hill_radii.clone(),
+        body_parent: vec![None; body_data.radii.len()],
         extend_count: predict_further.count,
     };
 
@@ -115,5 +100,6 @@ fn run_prediction(
 
     cache.result = Some(result);
     cache.computed_at = clock.time;
+    cache.generation += 1;
     plan.dirty = false;
 }

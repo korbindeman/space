@@ -2,6 +2,7 @@ use bevy::math::DVec3;
 use bevy::picking::hover::HoverMap;
 use bevy::picking::prelude::{DragEnd, DragStart, Pickable, Pointer};
 use bevy::prelude::*;
+use bevy::camera::visibility::RenderLayers;
 use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, egui};
 
@@ -63,10 +64,14 @@ struct NodeSlideState {
 pub struct ArrowDragState {
     /// Which axis is being dragged: 0=prograde, 1=normal, 2=radial. None if not dragging.
     pub active_axis: Option<usize>,
+    /// Which polarity arrow is being dragged (true=positive, false=negative).
+    pub active_positive: Option<bool>,
     /// Screen-space direction of the axis (for projecting mouse delta to thrust rate).
     pub axis_screen_dir: Vec2,
     /// Screen position at drag start (used to compute displacement for throttle).
     pub drag_origin: Vec2,
+    /// Sign of current drag rate: +1 = adding dv in positive direction, -1 = removing.
+    pub rate_sign: f32,
 }
 
 // --- Events ---
@@ -102,6 +107,32 @@ struct ArrowCone;
 /// Invisible hitbox for picking — a large sphere around each arrow.
 #[derive(Component)]
 struct ArrowHitbox;
+
+/// Per-arrow material handle and base color for dynamic opacity adjustment.
+#[derive(Component)]
+struct ArrowVisual {
+    material: Handle<StandardMaterial>,
+    base_color: LinearRgba,
+}
+
+/// Material handle for the slide sphere (for hover highlight).
+#[derive(Component)]
+struct SphereVisual {
+    material: Handle<StandardMaterial>,
+}
+
+/// Animated stretch state per arrow: [axis][positive=0/negative=1].
+/// Smoothly lerps toward the target stretch each frame.
+#[derive(Resource)]
+struct ArrowStretchState {
+    current: [[f32; 2]; 3],
+}
+
+impl Default for ArrowStretchState {
+    fn default() -> Self {
+        Self { current: [[0.0; 2]; 3] }
+    }
+}
 
 /// Draggable sphere at the node center for sliding along the trajectory.
 #[derive(Component)]
@@ -151,6 +182,7 @@ impl Plugin for ManeuverPlugin {
             .init_resource::<TrailHover>()
             .init_resource::<ArrowDragState>()
             .init_resource::<NodeSlideState>()
+            .init_resource::<ArrowStretchState>()
             .add_systems(Startup, spawn_snap_indicator)
             .add_systems(
                 Update,
@@ -203,9 +235,9 @@ fn maneuver_input(
         Res<Time>,
     ),
     windows: Query<&Window, With<PrimaryWindow>>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    camera_q: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<OverlayCamera>)>,
     cache: Res<PredictionCache>,
-    sim: (Res<CameraFocus>, Res<LiveDominantBody>, Res<PhysicsState>),
+    trail_frame: Res<TrailFrame>,
     plan: ResMut<ManeuverPlan>,
     mut hover: ResMut<TrailHover>,
     mut selected: ResMut<SelectedNode>,
@@ -219,7 +251,6 @@ fn maneuver_input(
     mut writer: bevy::ecs::message::MessageWriter<ManeuverEvent>,
 ) {
     let (keys, mouse, time) = input;
-    let (camera_focus, live_dom, physics) = sim;
     let (hover_map, hitboxes) = picking;
 
     // Check if pointer is currently hovering over any arrow hitbox
@@ -255,17 +286,19 @@ fn maneuver_input(
     let Some(ref result) = cache.result else {
         return;
     };
-
-    let trail_frame = live_dom.index;
-    let offset = trajectory::trail_frame_offset(&physics, trail_frame, camera_focus.active_frame);
+    let frame = trail_frame.index;
+    let offset = trail_frame.offset;
 
     // --- Handle active arrow drag (throttle-style) ---
     if let Some(axis) = drag.active_axis {
         if mouse.pressed(MouseButton::Left) {
             let screen_delta = cursor_pos - drag.drag_origin;
             let displacement = screen_delta.dot(drag.axis_screen_dir);
-            let rate = displacement as f64 * -10.0;
+            let rate = displacement as f64 * 10.0;
             let dt = time.delta_secs_f64();
+
+            // Track rate sign for arrow stretch visual feedback
+            drag.rate_sign = if rate.abs() < 0.01 { 0.0 } else { rate.signum() as f32 };
 
             match axis {
                 0 => node_dv.prograde += rate * dt,
@@ -283,6 +316,7 @@ fn maneuver_input(
             return;
         } else {
             drag.active_axis = None;
+            drag.active_positive = None;
         }
     }
 
@@ -295,12 +329,9 @@ fn maneuver_input(
 
                 for seg in &result.segments {
                     for i in 0..seg.points.len() {
-                        let frame_pos = if trail_frame < seg.body_positions[i].len() {
-                            seg.body_positions[i][trail_frame]
-                        } else {
-                            DVec3::ZERO
-                        };
-                        let world = ((seg.points[i] - frame_pos) * RENDER_SCALE).as_vec3() + offset;
+                        let world = trajectory::frame_relative_pos(
+                            seg.points[i], &seg.body_positions[i], frame,
+                        ) + offset;
                         let Some(screen) = camera.world_to_viewport(cam_transform, world).ok()
                         else {
                             continue;
@@ -334,12 +365,9 @@ fn maneuver_input(
 
         for seg in &result.segments {
             for i in 0..seg.points.len() {
-                let frame_pos = if trail_frame < seg.body_positions[i].len() {
-                    seg.body_positions[i][trail_frame]
-                } else {
-                    DVec3::ZERO
-                };
-                let world = ((seg.points[i] - frame_pos) * RENDER_SCALE).as_vec3() + offset;
+                let world = trajectory::frame_relative_pos(
+                    seg.points[i], &seg.body_positions[i], frame,
+                ) + offset;
                 let Some(screen) = camera.world_to_viewport(cam_transform, world).ok() else {
                     continue;
                 };
@@ -381,7 +409,7 @@ fn maneuver_input(
         for node in &plan.nodes {
             let (burn_start, _) = node.burn.time_window();
             if let Some(world_pos) =
-                find_node_position_on_trail(result, burn_start, trail_frame, offset)
+                find_node_position_on_trail(result, burn_start, frame, offset)
             {
                 let Some(screen) = camera.world_to_viewport(cam_transform, world_pos).ok() else {
                     continue;
@@ -415,18 +443,16 @@ fn manage_arrow_handles(
     selected: Res<SelectedNode>,
     plan: Res<ManeuverPlan>,
     cache: Res<PredictionCache>,
-    live_dom: Res<LiveDominantBody>,
+    trail_frame: Res<TrailFrame>,
     existing_handles: Query<Entity, With<ArrowHandle>>,
     existing_spheres: Query<Entity, With<NodeSlideSphere>>,
 ) {
-    let trail_frame = live_dom.index;
-
     let has_node = selected
         .id
         .and_then(|id| {
             let node = plan.nodes.iter().find(|n| n.id == id)?;
             let result = cache.result.as_ref()?;
-            node_world_pos_and_frame(result, node.burn.time_window().0, trail_frame)
+            node_world_pos_and_frame(result, node.burn.time_window().0, trail_frame.index)
         })
         .is_some();
 
@@ -454,20 +480,8 @@ fn manage_arrow_handles(
 
     for axis in 0..3 {
         let color = ARROW_COLORS[axis];
-        let mat = materials.add(StandardMaterial {
-            base_color: color,
-            emissive: color.into(),
-            unlit: true,
-            depth_bias: f32::MAX,
-            ..default()
-        });
-        let mat_dim = materials.add(StandardMaterial {
-            base_color: color.with_alpha(0.5),
-            emissive: color.with_alpha(0.5).into(),
-            unlit: true,
-            depth_bias: f32::MAX,
-            ..default()
-        });
+        let base_bright: LinearRgba = color.into();
+        let base_dim = LinearRgba::new(base_bright.red * 0.3, base_bright.green * 0.3, base_bright.blue * 0.3, 1.0);
 
         let shaft_mesh = meshes.add(Cylinder::new(SHAFT_RADIUS, 1.0));
         let cone_mesh = meshes.add(Cone {
@@ -476,12 +490,19 @@ fn manage_arrow_handles(
         });
 
         for positive in [true, false] {
-            let material = if positive {
-                mat.clone()
-            } else {
-                mat_dim.clone()
-            };
+            let base_color = if positive { base_bright } else { base_dim };
+            // Each arrow gets its own material so opacity can be adjusted per-frame.
+            // AlphaMode::Blend ensures arrows render in the transparent pass, AFTER
+            // the opaque slide sphere, so the sphere correctly occludes arrows behind it.
+            let arrow_material = materials.add(StandardMaterial {
+                base_color: base_color.into(),
+                emissive: base_color.into(),
+                unlit: true,
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            });
 
+            let overlay = RenderLayers::layer(OVERLAY_LAYER);
             commands
                 .spawn((
                     Mesh3d(hitbox_mesh.clone()),
@@ -489,21 +510,26 @@ fn manage_arrow_handles(
                     Transform::default(),
                     ArrowHandle { axis, positive },
                     ArrowHitbox,
+                    ArrowVisual { material: arrow_material.clone(), base_color },
+                    Pickable::default(),
+                    overlay.clone(),
                 ))
                 .with_children(|parent| {
                     parent.spawn((
                         Mesh3d(shaft_mesh.clone()),
-                        MeshMaterial3d(material.clone()),
+                        MeshMaterial3d(arrow_material.clone()),
                         Transform::from_scale(Vec3::new(1.0, BASE_ARROW_LEN, 1.0)),
                         Pickable::IGNORE,
                         ArrowShaft,
+                        overlay.clone(),
                     ));
                     parent.spawn((
                         Mesh3d(cone_mesh.clone()),
-                        MeshMaterial3d(material),
+                        MeshMaterial3d(arrow_material),
                         Transform::from_translation(Vec3::new(0.0, BASE_ARROW_LEN / 2.0, 0.0)),
                         Pickable::IGNORE,
                         ArrowCone,
+                        overlay.clone(),
                     ));
                 });
         }
@@ -515,69 +541,190 @@ fn manage_arrow_handles(
         base_color: Color::srgb(1.0, 0.8, 0.0),
         emissive: Color::srgb(0.5, 0.4, 0.0).into(),
         unlit: true,
-        depth_bias: f32::MAX,
         ..default()
     });
     commands.spawn((
         Mesh3d(sphere_mesh),
-        MeshMaterial3d(sphere_mat),
+        MeshMaterial3d(sphere_mat.clone()),
         Transform::default(),
         NodeSlideSphere,
+        SphereVisual { material: sphere_mat },
+        RenderLayers::layer(OVERLAY_LAYER),
     ));
 }
 
+/// Fixed stretch amount for arrows indicating delta-v direction.
+const ARROW_STRETCH: f32 = 0.0075;
+/// Lerp speed for arrow stretch animation (per second).
+const STRETCH_LERP_SPEED: f32 = 12.0;
+/// Hover brightness boost multiplier.
+const HOVER_BRIGHTNESS: f32 = 1.8;
+
 /// Update arrow handle transforms each frame. Arrows maintain fixed screen size.
+/// Arrows that face the camera fade out and become non-interactable.
+/// Hovered arrows brighten. Dragged arrows stretch.
 fn update_arrow_transforms(
     cache: Res<PredictionCache>,
     selected: Res<SelectedNode>,
     plan: Res<ManeuverPlan>,
-    live_dom: Res<LiveDominantBody>,
-    physics: Res<PhysicsState>,
-    camera_focus: Res<CameraFocus>,
+    trail_frame: Res<TrailFrame>,
     orbit_cam: Res<OrbitCamera>,
+    drag: Res<ArrowDragState>,
+    hover_map: Res<HoverMap>,
+    time: Res<Time>,
+    mut stretch_state: ResMut<ArrowStretchState>,
+    mut material_assets: ResMut<Assets<StandardMaterial>>,
+    camera_q: Query<&Transform, (With<Camera3d>, Without<ArrowHitbox>, Without<NodeSlideSphere>, Without<OverlayCamera>, Without<ArrowShaft>, Without<ArrowCone>)>,
     mut hitboxes: Query<
-        (&ArrowHandle, &mut Transform),
-        (With<ArrowHitbox>, Without<NodeSlideSphere>),
+        (Entity, &ArrowHandle, &mut Transform, &ArrowVisual, &mut Pickable, Option<&Children>),
+        (With<ArrowHitbox>, Without<NodeSlideSphere>, Without<ArrowShaft>, Without<ArrowCone>),
     >,
-    mut slide_sphere: Query<&mut Transform, (With<NodeSlideSphere>, Without<ArrowHitbox>)>,
+    mut children_set: ParamSet<(
+        Query<&mut Transform, (With<ArrowShaft>, Without<ArrowHitbox>, Without<ArrowCone>, Without<NodeSlideSphere>)>,
+        Query<&mut Transform, (With<ArrowCone>, Without<ArrowHitbox>, Without<ArrowShaft>, Without<NodeSlideSphere>)>,
+        Query<(Entity, &mut Transform, &SphereVisual), (With<NodeSlideSphere>, Without<ArrowHitbox>, Without<ArrowShaft>, Without<ArrowCone>)>,
+    )>,
 ) {
-    let trail_frame = live_dom.index;
-    let offset = trajectory::trail_frame_offset(&physics, trail_frame, camera_focus.active_frame);
-
     let node_info = selected.id.and_then(|id| {
         let node = plan.nodes.iter().find(|n| n.id == id)?;
         let result = cache.result.as_ref()?;
-        node_world_pos_and_frame(result, node.burn.time_window().0, trail_frame)
+        node_world_pos_and_frame(result, node.burn.time_window().0, trail_frame.index)
     });
 
     let Some((base_pos, frame)) = node_info else {
         return;
     };
-    let world_pos = base_pos + offset;
+    let world_pos = base_pos + trail_frame.offset;
+
+    // Camera forward direction (from camera position toward origin)
+    let view_dir = camera_q
+        .single()
+        .map(|t| -t.translation.normalize())
+        .unwrap_or(-Vec3::Z);
+
+    // Which entities are hovered?
+    let hovered_entities: Vec<Entity> = hover_map.0.values()
+        .flat_map(|hovers| hovers.keys().copied())
+        .collect();
 
     let s = (orbit_cam.distance * RENDER_SCALE) as f32;
     let arrow_len = BASE_ARROW_LEN * s;
     let sphere_gap = (SLIDE_SPHERE_RADIUS + HITBOX_CAPSULE_RADIUS) * s;
 
-    for (handle, mut transform) in &mut hitboxes {
+    let mut shaft_updates: Vec<(Entity, f32)> = Vec::new();
+    let mut cone_updates: Vec<(Entity, f32)> = Vec::new();
+
+    for (entity, handle, mut transform, visual, mut pickable, children) in &mut hitboxes {
         let dir = frame.col(handle.axis).normalize();
         let sign = if handle.positive { 1.0 } else { -1.0 };
+
+        // Fade arrows based on camera alignment
+        let alignment = dir.dot(view_dir).abs();
+        // Picking disabled at 45°, but opacity drops fast right at the threshold
+        // so it's clearly non-interactive by the time you can't click it.
+        let fade_start = 0.707; // cos(45°)
+        let opacity = if alignment < fade_start {
+            1.0
+        } else {
+            // Fast drop to 0.15 within a narrow band, then hold
+            let t = ((alignment - fade_start) / 0.2).min(1.0); // full fade in ~12° past threshold
+            1.0 - t * 0.85
+        };
+
+        // Hover highlight
+        let is_hovered = hovered_entities.contains(&entity);
+        let is_dragging = drag.active_axis == Some(handle.axis);
+        let brightness = if is_hovered || is_dragging { HOVER_BRIGHTNESS } else { 1.0 };
+
+        // Update material
+        if let Some(mat) = material_assets.get_mut(&visual.material) {
+            let c = visual.base_color * opacity * brightness;
+            mat.base_color = LinearRgba::new(c.red, c.green, c.blue, opacity).into();
+            mat.emissive = LinearRgba::new(c.red, c.green, c.blue, opacity).into();
+        }
+
+        // Disable picking when mostly face-on
+        // Disable picking when opacity has dropped to ~30%
+        pickable.is_hoverable = opacity > 0.3;
+
+        // Stretch only the exact arrow being dragged, based on immediate drag direction.
+        // Positive rate_sign = adding dv in positive axis direction.
+        // Positive arrow stretches with positive rate, shrinks with negative.
+        // Negative arrow is the opposite.
+        let is_this_arrow_dragged = drag.active_axis == Some(handle.axis)
+            && drag.active_positive == Some(handle.positive);
+        let target_stretch = if is_this_arrow_dragged {
+            let dir_sign = if handle.positive { 1.0 } else { -1.0 };
+            ARROW_STRETCH * drag.rate_sign * dir_sign
+        } else {
+            0.0
+        };
+
+        // Animate toward target
+        let polarity_idx = if handle.positive { 0 } else { 1 };
+        let current = &mut stretch_state.current[handle.axis][polarity_idx];
+        let dt = time.delta_secs();
+        *current += (target_stretch - *current) * (STRETCH_LERP_SPEED * dt).min(1.0);
+        let stretch = *current;
+
         let base = world_pos + dir * sign * sphere_gap;
-        let midpoint = base + dir * sign * arrow_len * 0.5;
+        let midpoint = base + dir * sign * (arrow_len * 0.5 + stretch * s * 0.5);
         let rotation = Quat::from_rotation_arc(Vec3::Y, dir * sign);
         *transform = Transform {
             translation: midpoint,
             rotation,
             scale: Vec3::splat(s),
         };
+
+        // Collect child updates for stretch
+        if let Some(children) = children {
+            let shaft_len = BASE_ARROW_LEN + stretch;
+            for child in children.iter() {
+                shaft_updates.push((child, shaft_len));
+                cone_updates.push((child, shaft_len));
+            }
+        }
     }
 
-    for mut transform in &mut slide_sphere {
-        *transform = Transform {
-            translation: world_pos,
-            scale: Vec3::splat(s),
-            ..default()
-        };
+    // Apply shaft stretches via ParamSet
+    {
+        let mut shafts = children_set.p0();
+        for (entity, shaft_len) in &shaft_updates {
+            if let Ok(mut tf) = shafts.get_mut(*entity) {
+                tf.scale = Vec3::new(1.0, *shaft_len, 1.0);
+            }
+        }
+    }
+    {
+        let mut cones = children_set.p1();
+        for (entity, shaft_len) in &cone_updates {
+            if let Ok(mut tf) = cones.get_mut(*entity) {
+                tf.translation.y = *shaft_len / 2.0;
+            }
+        }
+    }
+
+    // Slide sphere: position + hover highlight
+    {
+        let mut spheres = children_set.p2();
+        for (entity, mut transform, sphere_visual) in &mut spheres {
+            let is_hovered = hovered_entities.contains(&entity);
+            if let Some(mat) = material_assets.get_mut(&sphere_visual.material) {
+                if is_hovered {
+                    mat.base_color = Color::srgb(1.0, 1.0, 0.5);
+                    mat.emissive = LinearRgba::from(Color::srgb(0.8, 0.7, 0.2)).into();
+                } else {
+                    mat.base_color = Color::srgb(1.0, 0.8, 0.0);
+                    mat.emissive = LinearRgba::from(Color::srgb(0.5, 0.4, 0.0)).into();
+                }
+            }
+
+            *transform = Transform {
+                translation: world_pos,
+                scale: Vec3::splat(s),
+                ..default()
+            };
+        }
     }
 }
 
@@ -589,11 +736,9 @@ fn arrow_drag_start(
     cache: Res<PredictionCache>,
     selected: Res<SelectedNode>,
     plan: Res<ManeuverPlan>,
-    live_dom: Res<LiveDominantBody>,
-    physics: Res<PhysicsState>,
-    camera_focus: Res<CameraFocus>,
+    trail_frame: Res<TrailFrame>,
     orbit_cam: Res<OrbitCamera>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    camera_q: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<OverlayCamera>)>,
 ) {
     let event = trigger.event();
     let entity = event.entity;
@@ -604,19 +749,16 @@ fn arrow_drag_start(
         return;
     };
 
-    let trail_frame = live_dom.index;
-    let offset = trajectory::trail_frame_offset(&physics, trail_frame, camera_focus.active_frame);
-
     let node_info = selected.id.and_then(|id| {
         let node = plan.nodes.iter().find(|n| n.id == id)?;
         let result = cache.result.as_ref()?;
-        node_world_pos_and_frame(result, node.burn.time_window().0, trail_frame)
+        node_world_pos_and_frame(result, node.burn.time_window().0, trail_frame.index)
     });
 
     let Some((base_pos, frame)) = node_info else {
         return;
     };
-    let world_pos = base_pos + offset;
+    let world_pos = base_pos + trail_frame.offset;
     let s = (orbit_cam.distance * RENDER_SCALE) as f32;
     let arrow_len = BASE_ARROW_LEN * s;
     let sphere_gap = (SLIDE_SPHERE_RADIUS + HITBOX_CAPSULE_RADIUS) * s;
@@ -632,6 +774,7 @@ fn arrow_drag_start(
     };
 
     drag.active_axis = Some(handle.axis);
+    drag.active_positive = Some(handle.positive);
     drag.axis_screen_dir = (positive_tip_screen - node_screen).normalize_or_zero();
     drag.drag_origin = event.pointer_location.position;
 }
@@ -644,6 +787,7 @@ fn arrow_drag_end(
 ) {
     if handles.get(trigger.event().entity).is_ok() {
         drag.active_axis = None;
+        drag.active_positive = None;
     }
 }
 
@@ -740,7 +884,6 @@ fn spawn_snap_indicator(
         },
         unlit: true,
         cull_mode: None,
-        depth_bias: f32::MAX,
         ..default()
     });
     commands.spawn((
@@ -749,6 +892,7 @@ fn spawn_snap_indicator(
         Transform::default(),
         Visibility::Hidden,
         SnapIndicator,
+        RenderLayers::layer(OVERLAY_LAYER),
     ));
 }
 
@@ -756,7 +900,7 @@ fn spawn_snap_indicator(
 fn update_snap_indicator(
     hover: Res<TrailHover>,
     orbit_cam: Res<OrbitCamera>,
-    camera_q: Query<&Transform, (With<Camera3d>, Without<SnapIndicator>)>,
+    camera_q: Query<&Transform, (With<Camera3d>, Without<SnapIndicator>, Without<OverlayCamera>)>,
     mut indicators: Query<(&mut Transform, &mut Visibility), With<SnapIndicator>>,
 ) {
     let Ok((mut tf, mut vis)) = indicators.single_mut() else {
@@ -790,15 +934,13 @@ fn manage_node_markers(
     plan: Res<ManeuverPlan>,
     selected: Res<SelectedNode>,
     cache: Res<PredictionCache>,
-    live_dom: Res<LiveDominantBody>,
-    physics: Res<PhysicsState>,
-    camera_focus: Res<CameraFocus>,
+    trail_frame: Res<TrailFrame>,
     orbit_cam: Res<OrbitCamera>,
-    camera_q: Query<&Transform, (With<Camera3d>, Without<NodeMarkerDisc>)>,
+    camera_q: Query<&Transform, (With<Camera3d>, Without<NodeMarkerDisc>, Without<OverlayCamera>)>,
     mut markers: Query<(Entity, &NodeMarkerDisc, &mut Transform, &mut Visibility)>,
 ) {
-    let trail_frame = live_dom.index;
-    let offset = trajectory::trail_frame_offset(&physics, trail_frame, camera_focus.active_frame);
+    let frame = trail_frame.index;
+    let offset = trail_frame.offset;
     let cam_dist = (orbit_cam.distance * RENDER_SCALE) as f32;
     let cam_rot = camera_q
         .single()
@@ -819,7 +961,7 @@ fn manage_node_markers(
         let node = plan.nodes.iter().find(|n| n.id == marker.node_id).unwrap();
         let burn_time = node.burn.time_window().0;
         if let Some(Some(world_pos)) =
-            result.map(|r| find_node_position_on_trail(r, burn_time, trail_frame, offset))
+            result.map(|r| find_node_position_on_trail(r, burn_time, frame, offset))
         {
             *vis = Visibility::Inherited;
             *tf = Transform {
@@ -851,13 +993,12 @@ fn manage_node_markers(
             },
             unlit: true,
             cull_mode: None,
-            depth_bias: f32::MAX,
             ..default()
         });
 
         let burn_time = node.burn.time_window().0;
         let world_pos = result
-            .and_then(|r| find_node_position_on_trail(r, burn_time, trail_frame, offset))
+            .and_then(|r| find_node_position_on_trail(r, burn_time, frame, offset))
             .unwrap_or(Vec3::ZERO);
 
         commands.spawn((
@@ -869,6 +1010,7 @@ fn manage_node_markers(
                 scale: Vec3::splat(cam_dist * MARKER_RADIUS),
             },
             NodeMarkerDisc { node_id: node.id },
+            RenderLayers::layer(OVERLAY_LAYER),
         ));
     }
 }
@@ -876,12 +1018,11 @@ fn manage_node_markers(
 /// Bottom panel: Node editor.
 fn node_editor_panel(
     mut contexts: EguiContexts,
-    plan: ResMut<ManeuverPlan>,
+    mut plan: ResMut<ManeuverPlan>,
     mut selected: ResMut<SelectedNode>,
-    clock: Res<SimClock>,
+    mut clock: ResMut<SimClock>,
     ship_config: Res<ShipConfig>,
     mut node_dv: ResMut<NodeDeltaV>,
-    mut writer: bevy::ecs::message::MessageWriter<ManeuverEvent>,
 ) {
     let Some(sel_id) = selected.id else { return };
     let Some(node_idx) = plan.nodes.iter().position(|n| n.id == sel_id) else {
@@ -914,11 +1055,19 @@ fn node_editor_panel(
             ui.separator();
 
             if ui.button("Delete").clicked() {
-                writer.write(ManeuverEvent::DeleteNode { id: sel_id });
+                plan.nodes.retain(|n| n.id != sel_id);
+                plan.dirty = true;
                 selected.id = None;
             }
             if ui.button("Warp to node").clicked() {
-                writer.write(ManeuverEvent::WarpToNode { id: sel_id });
+                if let Some(node) = plan.nodes.iter().find(|n| n.id == sel_id) {
+                    let target_time = node.burn.time_window().0 - 10.0;
+                    if target_time > clock.time {
+                        clock.time = target_time;
+                    }
+                    clock.warp_index = 1;
+                    clock.warp = clock.warp_levels[1];
+                }
             }
         });
 
@@ -956,10 +1105,14 @@ fn node_editor_panel(
                 node_dv.prograde = pg as f64;
                 node_dv.normal = nm as f64;
                 node_dv.radial = rd as f64;
-                writer.write(ManeuverEvent::AdjustNode {
-                    id: sel_id,
-                    delta_v: DVec3::new(pg as f64, nm as f64, rd as f64),
-                });
+                if let Some(node) = plan.nodes.iter_mut().find(|n| n.id == sel_id) {
+                    let time = node.burn.time_window().0;
+                    node.burn = Box::new(ImpulseBurn {
+                        time,
+                        delta_v: DVec3::new(pg as f64, nm as f64, rd as f64),
+                    });
+                    plan.dirty = true;
+                }
             }
         });
     });
@@ -1001,46 +1154,16 @@ fn node_world_pos_and_frame(
         };
         let world_pos = ((seg.points[idx] - frame_pos) * RENDER_SCALE).as_vec3();
 
-        let vel = if idx + 1 < seg.points.len() {
-            let dt = seg.times[idx + 1] - seg.times[idx];
-            if dt > 1e-10 {
-                (seg.points[idx + 1] - seg.points[idx]) / dt
-            } else {
-                DVec3::X
-            }
-        } else if idx > 0 {
-            let dt = seg.times[idx] - seg.times[idx - 1];
-            if dt > 1e-10 {
-                (seg.points[idx] - seg.points[idx - 1]) / dt
-            } else {
-                DVec3::X
-            }
-        } else {
-            DVec3::X
-        };
-
+        // Use exact stored velocities — matches ImpulseBurn.acceleration exactly
+        let vel = seg.velocities[idx];
         let dom = seg.dominant_body[idx];
         let center_pos = if dom < seg.body_positions[idx].len() {
             seg.body_positions[idx][dom]
         } else {
             DVec3::ZERO
         };
-
-        // Compute body velocity from trail position differences
-        let center_vel = if idx + 1 < seg.times.len() && dom < seg.body_positions[idx].len() {
-            let dt = seg.times[idx + 1] - seg.times[idx];
-            if dt > 1e-10 && dom < seg.body_positions[idx + 1].len() {
-                (seg.body_positions[idx + 1][dom] - seg.body_positions[idx][dom]) / dt
-            } else {
-                DVec3::ZERO
-            }
-        } else if idx > 0 && dom < seg.body_positions[idx].len() && dom < seg.body_positions[idx - 1].len() {
-            let dt = seg.times[idx] - seg.times[idx - 1];
-            if dt > 1e-10 {
-                (seg.body_positions[idx][dom] - seg.body_positions[idx - 1][dom]) / dt
-            } else {
-                DVec3::ZERO
-            }
+        let center_vel = if dom < seg.body_velocities[idx].len() {
+            seg.body_velocities[idx][dom]
         } else {
             DVec3::ZERO
         };

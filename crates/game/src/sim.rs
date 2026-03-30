@@ -89,6 +89,23 @@ pub struct ShipConfig {
     pub fuel_mass: f64,
 }
 
+/// Static body metadata indexed by sim body index. Built once at setup.
+#[derive(Resource, Default, Clone)]
+pub struct BodyData {
+    pub radii: Vec<f64>,
+    pub hill_radii: Vec<f64>,
+}
+
+/// The reference frame used for rendering trails and placing maneuver nodes.
+/// Computed once per frame from camera focus and dominant body.
+#[derive(Resource)]
+pub struct TrailFrame {
+    /// Sim body index whose position is subtracted from trail points.
+    pub index: usize,
+    /// Render-space offset from trail frame to camera frame.
+    pub offset: Vec3,
+}
+
 #[derive(Resource)]
 pub struct LiveDominantBody {
     pub index: usize,
@@ -108,14 +125,22 @@ impl Default for LiveDominantBody {
 
 pub struct SimPlugin;
 
+impl Default for TrailFrame {
+    fn default() -> Self {
+        Self { index: 1, offset: Vec3::ZERO }
+    }
+}
+
 impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimClock>()
             .init_resource::<LiveDominantBody>()
+            .init_resource::<TrailFrame>()
             .add_systems(Startup, setup)
             .add_systems(Update, (
                 step_simulation,
                 update_live_dominant_body,
+                update_trail_frame.after(update_live_dominant_body),
             ));
     }
 }
@@ -213,6 +238,18 @@ pub fn setup(
         ..default()
     });
 
+    // --- Build static body metadata indexed by sim body index ---
+    // ship_idx + 1 = total body count (bodies 0..ship_idx are celestial, ship_idx is the ship)
+    let num_bodies = ship_idx + 1;
+    let mut body_data = BodyData {
+        radii: vec![0.0; num_bodies],
+        hill_radii: vec![0.0; num_bodies],
+    };
+    for def in &body_defs {
+        body_data.radii[def.idx] = def.radius;
+        body_data.hill_radii[def.idx] = def.hill;
+    }
+
     // --- Insert resources ---
     commands.insert_resource(PhysicsState {
         state,
@@ -232,6 +269,8 @@ pub fn setup(
         dry_mass: 800.0,
         fuel_mass: 200.0,
     });
+
+    commands.insert_resource(body_data);
 }
 
 /// Helper: step the physics state forward by dt.
@@ -248,6 +287,7 @@ fn step_simulation(
     mut physics: ResMut<PhysicsState>,
     mut plan: ResMut<crate::nav_map::maneuver::ManeuverPlan>,
     ship_config: Res<ShipConfig>,
+    body_data: Res<BodyData>,
 ) {
     if clock.paused() {
         return;
@@ -284,7 +324,7 @@ fn step_simulation(
             }
 
             // Apply impulse
-            let dom = dominant_body(&physics.state, ship_idx);
+            let dom = dominant_body(&physics.state, ship_idx, &body_data.hill_radii);
             if let Some(accel) = plan.nodes[node_idx].burn.acceleration(
                 &physics.state, ship_idx, dom, burn_start, 1.0,
             ) {
@@ -313,9 +353,36 @@ fn update_live_dominant_body(
     physics: Res<PhysicsState>,
     mut live_dom: ResMut<LiveDominantBody>,
     ship_config: Res<ShipConfig>,
+    body_data: Res<BodyData>,
     bodies: Query<(Entity, &SimBody)>,
 ) {
-    let dom_idx = dominant_body(&physics.state, ship_config.sim_index);
+    let dom_idx = dominant_body(&physics.state, ship_config.sim_index, &body_data.hill_radii);
     live_dom.index = dom_idx;
     live_dom.entity = bodies.iter().find(|(_, sb)| sb.0 == dom_idx).map(|(e, _)| e);
+}
+
+/// Compute the trail reference frame: focused body's frame, or dominant body when focused on ship.
+fn update_trail_frame(
+    camera_focus: Res<crate::nav_map::camera::CameraFocus>,
+    live_dom: Res<LiveDominantBody>,
+    ship_config: Res<ShipConfig>,
+    physics: Res<PhysicsState>,
+    mut trail_frame: ResMut<TrailFrame>,
+) {
+    let frame_idx = if camera_focus.active_frame == ship_config.sim_index {
+        live_dom.index
+    } else {
+        camera_focus.active_frame
+    };
+    trail_frame.index = frame_idx;
+
+    // Offset from trail frame to camera frame in render space
+    let cam_frame = camera_focus.active_frame;
+    trail_frame.offset = if frame_idx == cam_frame {
+        Vec3::ZERO
+    } else {
+        let trail_pos = physics.state.positions.get(frame_idx).copied().unwrap_or(DVec3::ZERO);
+        let cam_pos = physics.state.positions.get(cam_frame).copied().unwrap_or(DVec3::ZERO);
+        ((trail_pos - cam_pos) * crate::nav_map::RENDER_SCALE).as_vec3()
+    };
 }

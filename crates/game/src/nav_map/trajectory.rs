@@ -1,8 +1,7 @@
 use bevy::prelude::*;
 use bevy::math::DVec3;
 
-use crate::sim::*;
-use super::camera::CameraFocus;
+use crate::sim::{PhysicsState, TrailFrame};
 use super::prediction::PredictionCache;
 use super::target::TargetBody;
 use super::{RENDER_SCALE, BODY_COLORS};
@@ -19,11 +18,10 @@ impl Plugin for TrajectoryPlugin {
 
 // --- Systems ---
 
-/// Render all trajectories: ship trail in dominant-body frame, plus target ghost trail.
+/// Render all trajectories: ship trail in trail frame, plus target ghost trail.
 fn render_trajectories(
     cache: Res<PredictionCache>,
-    camera_focus: Res<CameraFocus>,
-    live_dom: Res<LiveDominantBody>,
+    trail_frame: Res<TrailFrame>,
     target: Res<TargetBody>,
     physics: Res<PhysicsState>,
     mut gizmos: Gizmos,
@@ -31,11 +29,6 @@ fn render_trajectories(
     let Some(ref result) = cache.result else {
         return;
     };
-
-    // Ship trajectory in dominant body frame
-    let trail_frame = live_dom.index;
-    let camera_frame = camera_focus.active_frame;
-    let offset = trail_frame_offset(&physics, trail_frame, camera_frame);
 
     for seg in &result.segments {
         if seg.points.len() < 2 {
@@ -49,13 +42,13 @@ fn render_trajectories(
             let p0 = frame_relative_pos(
                 seg.points[i - 1],
                 &seg.body_positions[i - 1],
-                trail_frame,
-            ) + offset;
+                trail_frame.index,
+            ) + trail_frame.offset;
             let p1 = frame_relative_pos(
                 seg.points[i],
                 &seg.body_positions[i],
-                trail_frame,
-            ) + offset;
+                trail_frame.index,
+            ) + trail_frame.offset;
 
             gizmos.line(p0, p1, color);
         }
@@ -63,7 +56,7 @@ fn render_trajectories(
 
     // Target ghost trail (if target set)
     let Some(target_idx) = target.target else { return };
-    let target_offset = trail_frame_offset(&physics, target_idx, camera_frame);
+    let target_offset = target_frame_offset(&physics, target_idx, &trail_frame);
 
     for seg in &result.segments {
         if seg.points.len() < 2 {
@@ -93,26 +86,11 @@ fn render_trajectories(
 
 // --- Helpers ---
 
-/// Compute the render-space offset from trail_frame to camera_frame.
-pub fn trail_frame_offset(
-    physics: &PhysicsState,
-    trail_frame: usize,
-    camera_frame: usize,
-) -> Vec3 {
-    if trail_frame == camera_frame {
-        return Vec3::ZERO;
-    }
-    let trail_pos = if trail_frame < physics.state.positions.len() {
-        physics.state.positions[trail_frame]
-    } else {
-        DVec3::ZERO
-    };
-    let cam_pos = if camera_frame < physics.state.positions.len() {
-        physics.state.positions[camera_frame]
-    } else {
-        DVec3::ZERO
-    };
-    ((trail_pos - cam_pos) * RENDER_SCALE).as_vec3()
+/// Compute render-space offset for the target body relative to the camera frame.
+fn target_frame_offset(physics: &PhysicsState, target_idx: usize, trail_frame: &TrailFrame) -> Vec3 {
+    let target_pos = physics.state.positions.get(target_idx).copied().unwrap_or(DVec3::ZERO);
+    let trail_pos = physics.state.positions.get(trail_frame.index).copied().unwrap_or(DVec3::ZERO);
+    ((target_pos - trail_pos) * RENDER_SCALE).as_vec3() + trail_frame.offset
 }
 
 pub fn frame_relative_pos(

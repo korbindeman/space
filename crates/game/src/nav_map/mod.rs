@@ -13,9 +13,6 @@ pub mod trajectory;
 /// Render scale: sim meters to render units.
 pub const RENDER_SCALE: f64 = 1e-6;
 
-/// Below this fraction of camera distance, the 3D mesh is hidden and replaced with a flat icon.
-pub const ICON_THRESHOLD: f32 = 0.015;
-
 /// Radius of screen-stable markers (body icons, ship, maneuver nodes) as a fraction of camera distance.
 pub const MARKER_RADIUS: f32 = 0.006;
 

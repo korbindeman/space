@@ -36,7 +36,7 @@ fn target_input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    camera_q: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<super::camera::OverlayCamera>)>,
     physics: Res<PhysicsState>,
     camera_focus: Res<CameraFocus>,
     bodies: Query<(&SimBody, &CelestialBody)>,

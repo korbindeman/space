@@ -7,8 +7,12 @@ use super::phase::{PredictionPhase, TerminationReason};
 #[derive(Clone, Debug)]
 pub struct TrailSegment {
     pub points: Vec<DVec3>,
+    /// Exact ship velocity at each trail point (from ghost sim state, not finite differences).
+    pub velocities: Vec<DVec3>,
     /// body_positions[step_idx][body_idx] — every body's position at every trail timestep.
     pub body_positions: Vec<Vec<DVec3>>,
+    /// body_velocities[step_idx][body_idx] — every body's velocity at every trail timestep.
+    pub body_velocities: Vec<Vec<DVec3>>,
     pub times: Vec<f64>,
     /// Per-point dominant body index.
     pub dominant_body: Vec<usize>,
@@ -22,7 +26,9 @@ impl TrailSegment {
     pub fn new(after_node: Option<NodeId>) -> Self {
         Self {
             points: Vec::new(),
+            velocities: Vec::new(),
             body_positions: Vec::new(),
+            body_velocities: Vec::new(),
             times: Vec::new(),
             dominant_body: Vec::new(),
             phase: Vec::new(),
@@ -33,13 +39,17 @@ impl TrailSegment {
     pub fn push_point(
         &mut self,
         ship_pos: DVec3,
+        ship_vel: DVec3,
         all_body_positions: Vec<DVec3>,
+        all_body_velocities: Vec<DVec3>,
         time: f64,
         dominant: usize,
         phase: PredictionPhase,
     ) {
         self.points.push(ship_pos);
+        self.velocities.push(ship_vel);
         self.body_positions.push(all_body_positions);
+        self.body_velocities.push(all_body_velocities);
         self.times.push(time);
         self.dominant_body.push(dominant);
         self.phase.push(phase);
@@ -68,6 +78,10 @@ pub struct Encounter {
     pub periapsis_altitude: f64,
     pub eccentricity: f64,
     pub inclination: f64,
+    /// Segment index of closest approach point (for looking up body positions).
+    pub closest_segment_idx: usize,
+    /// Point index within segment of closest approach.
+    pub closest_point_idx: usize,
 }
 
 #[derive(Clone, Debug)]

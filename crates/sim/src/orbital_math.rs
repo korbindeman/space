@@ -1,37 +1,40 @@
 use glam::{DMat3, DVec3};
 
 /// Prograde/normal/radial basis for the ship's orbit around `center_pos`.
+/// Uses the TNW (velocity-normal-radial) frame convention:
 ///
 /// Returns a matrix whose columns are:
-///   col 0 = prograde  (along velocity relative to center)
-///   col 1 = normal    (along angular momentum)
-///   col 2 = radial    (outward from center)
+///   col 0 = prograde  (velocity direction relative to center)
+///   col 1 = normal    (perpendicular to orbital plane, along angular momentum)
+///   col 2 = radial    (completes right-handed triad, roughly outward from center)
 ///
-/// If velocity is zero or parallel to radial, returns an arbitrary valid frame.
+/// If velocity is zero, falls back to a position-based frame.
 pub fn orbital_frame(pos: DVec3, vel: DVec3, center_pos: DVec3, center_vel: DVec3) -> DMat3 {
     let r = pos - center_pos;
-    let radial = if r.length_squared() > 0.0 {
-        r.normalize()
-    } else {
-        DVec3::X
-    };
-
     let rel_vel = vel - center_vel;
-    let angular_momentum = r.cross(rel_vel);
 
-    let normal = if angular_momentum.length_squared() > 1e-30 {
-        angular_momentum.normalize()
+    // Prograde: directly from velocity
+    let prograde = if rel_vel.length_squared() > 1e-30 {
+        rel_vel.normalize()
     } else {
-        // Velocity is zero or parallel to radial — pick arbitrary normal
-        let candidate = if radial.dot(DVec3::Y).abs() < 0.9 {
-            DVec3::Y
-        } else {
-            DVec3::Z
-        };
+        // Zero velocity fallback: use tangential direction from position
+        let radial = if r.length_squared() > 0.0 { r.normalize() } else { DVec3::X };
+        let candidate = if radial.dot(DVec3::Y).abs() < 0.9 { DVec3::Y } else { DVec3::Z };
         radial.cross(candidate).normalize()
     };
 
-    let prograde = normal.cross(radial);
+    // Normal: perpendicular to orbital plane
+    let angular_momentum = r.cross(rel_vel);
+    let normal = if angular_momentum.length_squared() > 1e-30 {
+        angular_momentum.normalize()
+    } else {
+        // Degenerate case: velocity parallel to radial or zero
+        let candidate = if prograde.dot(DVec3::Y).abs() < 0.9 { DVec3::Y } else { DVec3::Z };
+        prograde.cross(candidate).normalize()
+    };
+
+    // Radial: completes the right-handed orthonormal triad
+    let radial = prograde.cross(normal);
 
     DMat3::from_cols(prograde, normal, radial)
 }

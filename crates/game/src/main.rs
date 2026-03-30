@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::asset::AssetPlugin;
-use bevy::window::PresentMode;
+use bevy::window::{PresentMode, WindowMode};
 
 pub mod sim;
 pub mod nav_map;
@@ -12,6 +12,7 @@ fn main() {
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Sol".into(),
+                    mode: WindowMode::BorderlessFullscreen(MonitorSelection::Current),
                     present_mode: PresentMode::AutoNoVsync,
                     ..default()
                 }),

@@ -79,6 +79,8 @@ pub fn detect_encounters(
                 periapsis_altitude,
                 eccentricity: elements.eccentricity,
                 inclination: elements.inclination,
+                closest_segment_idx: raw.closest_segment_idx,
+                closest_point_idx: raw.closest_point_idx,
             })
         })
         .collect()

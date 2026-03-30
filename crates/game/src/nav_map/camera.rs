@@ -3,10 +3,17 @@ use bevy::core_pipeline::Skybox;
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::picking::prelude::{Click, Pointer};
 use bevy::render::render_resource::{TextureViewDescriptor, TextureViewDimension};
+use bevy::camera::visibility::RenderLayers;
 use bevy_egui::PrimaryEguiContext;
 
 use crate::sim::*;
+use super::body::EncounterGhost;
 use super::RENDER_SCALE;
+
+/// Render layer for maneuver UI elements (arrows, markers, snap indicator).
+/// Rendered by an overlay camera that clears depth but not color, so these
+/// elements always appear on top of the world while depth-testing against each other.
+pub const OVERLAY_LAYER: usize = 1;
 
 // --- Resources ---
 
@@ -43,6 +50,9 @@ impl Default for OrbitCamera {
 
 // --- Plugin ---
 
+#[derive(Component)]
+pub struct OverlayCamera;
+
 #[derive(Resource)]
 struct SkyboxHandle(Handle<Image>);
 
@@ -57,6 +67,7 @@ impl Plugin for CameraPlugin {
                 keyboard_input,
                 camera_input,
                 update_camera,
+                sync_overlay_camera.after(update_camera),
                 setup_skybox_cubemap,
             ))
             .add_observer(on_body_clicked);
@@ -84,6 +95,21 @@ fn setup_camera(
         PrimaryEguiContext,
     ));
     commands.insert_resource(SkyboxHandle(skybox_handle));
+
+    // Overlay camera: renders maneuver UI on top of the world.
+    // Clears depth (so maneuver elements depth-test against each other, not the world)
+    // but not color (world renders underneath).
+    commands.spawn((
+        Camera3d::default(),
+        Camera {
+            order: 1,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 5.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
+        RenderLayers::layer(OVERLAY_LAYER),
+        OverlayCamera,
+    ));
 }
 
 /// Once the skybox PNG is loaded, reinterpret it as a cubemap (6 faces stacked vertically).
@@ -185,7 +211,7 @@ fn camera_input(
 /// Update camera transform from orbit camera state.
 fn update_camera(
     orbit_cam: Res<OrbitCamera>,
-    mut camera_q: Query<&mut Transform, With<Camera3d>>,
+    mut camera_q: Query<&mut Transform, (With<Camera3d>, Without<OverlayCamera>)>,
 ) {
     let Ok(mut transform) = camera_q.single_mut() else {
         return;
@@ -203,16 +229,35 @@ fn update_camera(
     transform.look_at(Vec3::ZERO, Vec3::Y);
 }
 
-/// Double-click on a body or ship to focus the camera on it.
+/// Keep the overlay camera in sync with the main camera.
+fn sync_overlay_camera(
+    main: Query<&Transform, (With<Camera3d>, Without<OverlayCamera>)>,
+    mut overlay: Query<&mut Transform, With<OverlayCamera>>,
+) {
+    let Ok(main_tf) = main.single() else { return };
+    let Ok(mut overlay_tf) = overlay.single_mut() else { return };
+    *overlay_tf = *main_tf;
+}
+
+/// Double-click on a body, ship, or encounter ghost to focus the camera on it.
 fn on_body_clicked(
     trigger: On<Pointer<Click>>,
     time: Res<Time>,
     mut last_click: ResMut<LastClick>,
     mut camera_focus: ResMut<CameraFocus>,
     bodies: Query<&SimBody, Or<(With<CelestialBody>, With<Ship>)>>,
+    ghosts: Query<&EncounterGhost>,
 ) {
     let entity = trigger.event_target();
-    let Ok(sim_body) = bodies.get(entity) else { return };
+
+    // Resolve the focus target: real body/ship, or encounter ghost mapping to its real body
+    let (focus_entity, body_idx) = if let Ok(sim_body) = bodies.get(entity) {
+        (entity, sim_body.0)
+    } else if let Ok(ghost) = ghosts.get(entity) {
+        (ghost.body_entity, ghost.body_idx)
+    } else {
+        return;
+    };
 
     let now = time.elapsed_secs_f64();
     let is_double_click = last_click.entity == Some(entity) && (now - last_click.time) < 0.4;
@@ -221,8 +266,8 @@ fn on_body_clicked(
     last_click.time = now;
 
     if is_double_click {
-        camera_focus.entity = entity;
-        camera_focus.body_index = Some(sim_body.0);
-        camera_focus.active_frame = sim_body.0;
+        camera_focus.entity = focus_entity;
+        camera_focus.body_index = Some(body_idx);
+        camera_focus.active_frame = body_idx;
     }
 }

@@ -44,8 +44,37 @@ fn radial_angle(ship_pos: DVec3, body_pos: DVec3) -> f64 {
     r.z.atan2(r.x)
 }
 
-/// Find which body exerts the strongest gravitational acceleration on the ship.
-pub fn dominant_body(state: &SimState, ship_idx: usize) -> usize {
+/// Find the dominant body for the ship using Hill sphere membership.
+/// Picks the body whose Hill sphere contains the ship and is the smallest
+/// (most local). Falls back to strongest gravitational acceleration if not
+/// inside any Hill sphere.
+pub fn dominant_body(state: &SimState, ship_idx: usize, hill_radii: &[f64]) -> usize {
+    let ship_pos = state.positions[ship_idx];
+
+    // Find the smallest enclosing Hill sphere
+    let mut best_hill_idx: Option<usize> = None;
+    let mut best_hill_radius = f64::MAX;
+
+    for i in 0..state.body_count() {
+        if i == ship_idx {
+            continue;
+        }
+        let hill_r = if i < hill_radii.len() { hill_radii[i] } else { 0.0 };
+        if hill_r <= 0.0 {
+            continue;
+        }
+        let dist = (state.positions[i] - ship_pos).length();
+        if dist < hill_r && hill_r < best_hill_radius {
+            best_hill_idx = Some(i);
+            best_hill_radius = hill_r;
+        }
+    }
+
+    if let Some(idx) = best_hill_idx {
+        return idx;
+    }
+
+    // Fallback: strongest gravitational acceleration (for Sun or bodies without Hill radii)
     let mut best_idx = 0;
     let mut best_accel = 0.0_f64;
 
@@ -53,7 +82,7 @@ pub fn dominant_body(state: &SimState, ship_idx: usize) -> usize {
         if i == ship_idx {
             continue;
         }
-        let r = (state.positions[i] - state.positions[ship_idx]).length();
+        let r = (state.positions[i] - ship_pos).length();
         let accel = G * state.masses[i] / (r * r);
         if accel > best_accel {
             best_accel = accel;
@@ -67,9 +96,9 @@ pub fn dominant_body(state: &SimState, ship_idx: usize) -> usize {
 pub fn determine_initial_phase(
     state: &SimState,
     ship_idx: usize,
-    _config: &PredictionConfig,
+    config: &PredictionConfig,
 ) -> PredictionPhase {
-    let dom = dominant_body(state, ship_idx);
+    let dom = dominant_body(state, ship_idx, &config.body_hill_radii);
     let rel_pos = state.positions[ship_idx] - state.positions[dom];
     let rel_vel = state.velocities[ship_idx] - state.velocities[dom];
     let mu = G * state.masses[dom];
@@ -98,7 +127,7 @@ pub fn update_phase(
     time: f64,
     has_nodes_ahead: bool,
 ) -> PredictionPhase {
-    let dom = dominant_body(state, ship_idx);
+    let dom = dominant_body(state, ship_idx, &config.body_hill_radii);
 
     match phase {
         PredictionPhase::Orbiting {
@@ -287,8 +316,23 @@ pub fn update_phase(
                     };
                 }
 
-                return PredictionPhase::Done {
-                    reason: TerminationReason::EncounterResolved,
+                // Not captured by encounter body — check if bound to parent
+                let dom = dominant_body(state, ship_idx, &config.body_hill_radii);
+                let dom_rel_pos = ship_pos - state.positions[dom];
+                let dom_rel_vel = state.velocities[ship_idx] - state.velocities[dom];
+                let dom_mu = G * state.masses[dom];
+                let dom_energy = dom_rel_vel.length_squared() / 2.0 - dom_mu / dom_rel_pos.length();
+
+                if dom_energy < 0.0 {
+                    return PredictionPhase::Orbiting {
+                        body_idx: dom,
+                        start_angle: radial_angle(ship_pos, state.positions[dom]),
+                        crossed_half: false,
+                    };
+                }
+
+                return PredictionPhase::Transfer {
+                    origin_body: body_idx,
                 };
             }
 

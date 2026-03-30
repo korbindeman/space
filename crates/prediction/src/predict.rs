@@ -48,11 +48,13 @@ pub fn predict(
 
     // Record initial position at t0
     {
-        let dom = dominant_body(&ghost, ship_idx);
+        let dom = dominant_body(&ghost, ship_idx, &config.body_hill_radii);
         let segment = segments.last_mut().unwrap();
         segment.push_point(
             ghost.positions[ship_idx],
+            ghost.velocities[ship_idx],
             ghost.positions.clone(),
+            ghost.velocities.clone(),
             t,
             dom,
             phase.clone(),
@@ -61,7 +63,7 @@ pub fn predict(
 
     for _step in 0..config.max_steps {
         // Adaptive dt
-        let dt = compute_dt(&ghost, ship_idx, config, &phase);
+        let dt = compute_dt(&ghost, ship_idx, config);
 
         // Check if an impulse node falls within this step and needs substep splitting
         let mut remaining_dt = dt;
@@ -92,12 +94,14 @@ pub fn predict(
                 }
 
                 // Record pre-burn point in the current segment at the impulse time
-                let dom = dominant_body(&ghost, ship_idx);
+                let dom = dominant_body(&ghost, ship_idx, &config.body_hill_radii);
                 {
                     let segment = segments.last_mut().unwrap();
                     segment.push_point(
                         ghost.positions[ship_idx],
+                        ghost.velocities[ship_idx],
                         ghost.positions.clone(),
+                        ghost.velocities.clone(),
                         step_start,
                         dom,
                         phase.clone(),
@@ -135,7 +139,9 @@ pub fn predict(
                         let segment = segments.last_mut().unwrap();
                         segment.push_point(
                             ghost.positions[ship_idx],
+                            ghost.velocities[ship_idx],
                             ghost.positions.clone(),
+                            ghost.velocities.clone(),
                             step_start,
                             dom,
                             phase.clone(),
@@ -153,12 +159,14 @@ pub fn predict(
         t = step_start;
 
         // Record trail point
-        let dom = dominant_body(&ghost, ship_idx);
+        let dom = dominant_body(&ghost, ship_idx, &config.body_hill_radii);
         {
             let segment = segments.last_mut().unwrap();
             segment.push_point(
                 ghost.positions[ship_idx],
+                ghost.velocities[ship_idx],
                 ghost.positions.clone(),
+                ghost.velocities.clone(),
                 t,
                 dom,
                 phase.clone(),
@@ -234,7 +242,7 @@ pub fn predict(
         if let PredictionPhase::Done { reason: _ } = phase {
             if extend_remaining > 0 {
                 extend_remaining -= 1;
-                let dom = dominant_body(&ghost, ship_idx);
+                let dom = dominant_body(&ghost, ship_idx, &config.body_hill_radii);
                 phase = PredictionPhase::Orbiting {
                     body_idx: dom,
                     start_angle: {
@@ -287,7 +295,6 @@ fn compute_dt(
     state: &SimState,
     ship_idx: usize,
     config: &PredictionConfig,
-    phase: &PredictionPhase,
 ) -> f64 {
     if !config.adaptive_dt {
         return config.base_dt;
@@ -320,11 +327,6 @@ fn compute_dt(
                 dt = dt.min(config.base_dt * 0.2);
             }
         }
-    }
-
-    // Finer dt during encounters
-    if matches!(phase, PredictionPhase::Encounter { .. }) {
-        dt = dt.min(config.base_dt * 0.1);
     }
 
     dt.max(0.01)
