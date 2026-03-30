@@ -325,6 +325,7 @@ fn render_cached_orbits(
 }
 
 /// Position on a Keplerian ellipse at true anomaly `nu`, relative to the parent.
+/// Reference plane is XY with Z-up, matching the convention in `orbital_elements()`.
 fn keplerian_position(
     a: f64,
     e: f64,
@@ -337,10 +338,10 @@ fn keplerian_position(
     let angle_in_plane = arg_periapsis + nu;
     let pos_plane = DVec3::new(
         r * angle_in_plane.cos(),
-        0.0,
         r * angle_in_plane.sin(),
+        0.0,
     );
-    let node_axis = DVec3::new(lon_ascending_node.cos(), 0.0, lon_ascending_node.sin());
+    let node_axis = DVec3::new(lon_ascending_node.cos(), lon_ascending_node.sin(), 0.0);
     rodrigues(pos_plane, node_axis, incl)
 }
 
